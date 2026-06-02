@@ -85,6 +85,19 @@ gain).
 > rejects; the root `CMakeLists.txt` sets `CMAKE_POLICY_VERSION_MINIMUM=3.5`
 > (scoped to the HighFive fetch) to work around this.
 
+CI: `.github/workflows/ci.yml` builds + tests on CPU (Serial and OpenMP);
+`.github/workflows/gpu-tests.yml` builds with CUDA and runs the suite on an
+NVIDIA GPU runner (Tesla T4). A CUDA build needs Kokkos's `nvcc_wrapper` as the
+C++ compiler, e.g.:
+
+```sh
+curl -fsSL -o nvcc_wrapper \
+  https://raw.githubusercontent.com/kokkos/kokkos/5.1.1/bin/nvcc_wrapper && chmod +x nvcc_wrapper
+cmake -B build_cuda -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_CXX_COMPILER=$PWD/nvcc_wrapper \
+    -DKokkos_ENABLE_CUDA=ON -DKokkos_ARCH_TURING75=ON   # set arch for your card
+```
+
 ## Running the simulations
 
 Each executable is configured by module-level constants at the top of its

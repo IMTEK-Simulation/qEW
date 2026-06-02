@@ -1,0 +1,69 @@
+name: GPU Tests
+
+# Runs the full test suite on an NVIDIA GPU (the group's self-hosted
+# linux-x86-cuda runner, a Tesla T4 = Turing sm_75). The same Kokkos kernels
+# that the CPU CI runs on Serial/OpenMP run here on CUDA; kokkos-fft uses cuFFT.
+# Modeled on muGrid's .github/workflows/gpu-tests.yml.
+
+on:
+  push:
+    branches: [ main ]
+    tags: [ 'v*' ]
+
+jobs:
+  gpu-tests:
+    runs-on: linux-x86-cuda
+    timeout-minutes: 90
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install CUDA Toolkit
+        uses: Jimver/cuda-toolkit@v0.2.35
+        id: cuda-toolkit
+        with:
+          cuda: '12.6.3'
+          method: 'network'
+          sub-packages: '["nvcc", "cudart-dev", "nvrtc-dev"]'
+          # libcufft-dev is kokkos-fft's CUDA backend (auto-enabled with CUDA).
+          non-cuda-sub-packages: '["libcufft-dev"]'
+
+      - name: Show GPU info
+        run: |
+          nvidia-smi
+          nvcc --version
+
+      # HDF5 enables the .h5 I/O + golden tests (fixtures are committed). FFTW is
+      # NOT needed: with Kokkos_ENABLE_CUDA, kokkos-fft uses cuFFT, not FFTW.
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -qy
+          sudo apt-get install -y cmake libhdf5-dev
+
+      # Kokkos's nvcc path needs the C++ compiler to be its nvcc_wrapper. With
+      # FetchContent the wrapper isn't on disk before configure, so fetch the one
+      # matching the Kokkos tag we pin (5.1.1). It dispatches device code to nvcc
+      # and host code to g++.
+      - name: Get Kokkos nvcc_wrapper
+        run: |
+          curl -fsSL -o "$GITHUB_WORKSPACE/nvcc_wrapper" \
+            https://raw.githubusercontent.com/kokkos/kokkos/5.1.1/bin/nvcc_wrapper
+          chmod +x "$GITHUB_WORKSPACE/nvcc_wrapper"
+
+      - name: Configure (Kokkos CUDA, Tesla T4 = Turing sm_75)
+        run: >
+          cmake -B build_cuda
+          -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_CXX_COMPILER=$GITHUB_WORKSPACE/nvcc_wrapper
+          -DKokkos_ENABLE_CUDA=ON
+          -DKokkos_ARCH_TURING75=ON
+
+      - name: Build
+        run: cmake --build build_cuda -j$(nproc)
+
+      # Tests run on the default execution space = CUDA, so this exercises the
+      # GPU path. Discovery is PRE_TEST (set in tests/CMakeLists.txt), so the
+      # enumeration runs the binary here on the GPU node.
+      - name: Run tests on the GPU
+        working-directory: build_cuda
+        run: ctest --output-on-failure
