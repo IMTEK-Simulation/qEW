@@ -49,10 +49,21 @@ cmake --build build_omp
 OMP_NUM_THREADS=8 OMP_PROC_BIND=spread OMP_PLACES=threads \
     ctest --test-dir build_omp --output-on-failure
 
-# GPU
-cmake -B build -DCMAKE_BUILD_TYPE=Release -DKokkos_ENABLE_CUDA=ON   # NVIDIA
-# or                                       -DKokkos_ENABLE_HIP=ON   # AMD
+# GPU — NVIDIA (set the arch for your card, e.g. Hopper H100 = ADA/HOPPER90)
+cmake -B build_cuda -DCMAKE_BUILD_TYPE=Release \
+    -DKokkos_ENABLE_CUDA=ON -DKokkos_ARCH_HOPPER90=ON
+
+# GPU — AMD MI300A (APU, gfx942, unified memory); needs ROCm/hipcc on PATH
+cmake -B build_hip -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_CXX_COMPILER=hipcc \
+    -DKokkos_ENABLE_HIP=ON -DKokkos_ARCH_AMD_GFX942_APU=ON
+# (discrete MI300X: drop the _APU suffix -> -DKokkos_ARCH_AMD_GFX942=ON)
 ```
+
+Only Kokkos targets the device — the FFT-based noise setup (pocketfft) and HDF5
+I/O stay on the host CPU, so no GPU FFT library is needed. All host access to
+device data goes through `create_mirror_view`/`deep_copy`, so the code is correct
+on both discrete and unified (APU) memory.
 
 The same kernels run on whichever backend is selected. **Tests run on the
 default execution space**, so an OpenMP build runs them multi-threaded and a GPU
