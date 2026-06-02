@@ -1,0 +1,214 @@
+#ifndef QEW_LBFGS_H
+#define QEW_LBFGS_H
+
+#include <cmath>
+#include <vector>
+
+#include <Kokkos_Core.hpp>
+
+#include "qew_model.h"
+#include "qew_types.h"
+
+// Limited-memory BFGS energy minimisation, the production replacement for FIRE
+// in the static qEW runs (FIRE is kept as a fallback). GPU-friendly: the Nocedal
+// two-loop recursion is a handful of dot-products (parallel_reduce) and AXPYs
+// (parallel_for) over length-N vectors with the small m-vector history; the
+// scalars live on the host.
+//
+// Line search: backtracking ARMIJO (sufficient decrease) -- function
+// evaluations only (cheaper than Wolfe, whose curvature test needs a gradient
+// per trial), monotone and non-overshooting. Armijo alone does NOT guarantee
+// the curvature condition s.y > 0, so we add the standard safeguard: SKIP the
+// (s,y) update whenever s.y <= eps |s||y|, which keeps the implicit inverse
+// Hessian positive definite. Initial-Hessian scaling H0 = (s.y)/(y.y) I.
+//
+// Unbounded: the periodic-wrap noise lets h roam freely (cf. qew_depinning.py),
+// so no box constraint / L-BFGS-B machinery is needed.
+namespace qew {
+
+struct LbfgsParams {
+    int m = 8;                     // history length
+    real_t ftol = 1e-6;            // converged when max_i |dE/dh_i| < ftol
+    int max_iter = 10000;
+    real_t c1 = 1e-4;              // Armijo sufficient-decrease constant
+    real_t ls_shrink = 0.5;        // backtracking factor
+    int max_ls = 30;               // max backtracking steps
+    real_t curvature_eps = 1e-12;  // skip pair if s.y <= eps |s||y|
+};
+
+struct LbfgsResult {
+    int iterations = 0;
+    real_t max_force = 0;
+    bool converged = false;
+    long n_func_evals = 0;
+};
+
+namespace detail {
+
+inline real_t lbfgs_dot(int n, const View1D &a, const View1D &b) {
+    real_t s = 0;
+    Kokkos::parallel_reduce(
+        "lbfgs_dot", n,
+        KOKKOS_LAMBDA(const int i, real_t &acc) { acc += a(i) * b(i); }, s);
+    return s;
+}
+
+inline real_t lbfgs_max_abs(int n, const View1D &a) {
+    real_t s = 0;
+    Kokkos::parallel_reduce(
+        "lbfgs_maxabs", n,
+        KOKKOS_LAMBDA(const int i, real_t &acc) {
+            const real_t v = Kokkos::fabs(a(i));
+            if (v > acc) acc = v;
+        },
+        Kokkos::Max<real_t>(s));
+    return s;
+}
+
+inline void lbfgs_axpy(int n, real_t c, const View1D &x, const View1D &y) {
+    Kokkos::parallel_for(
+        "lbfgs_axpy", n, KOKKOS_LAMBDA(const int i) { y(i) += c * x(i); });
+}
+
+}  // namespace detail
+
+// Relax `h` in place. Returns iteration count, final max|force|, convergence
+// flag, and the total number of objective evaluations.
+template <class Noise>
+LbfgsResult lbfgs_minimize(const View1D &h, const Params &p, const Noise &noise,
+                           const LbfgsParams &lp) {
+    using detail::lbfgs_axpy;
+    using detail::lbfgs_dot;
+    using detail::lbfgs_max_abs;
+
+    const int n = static_cast<int>(h.extent(0));
+    const int m = lp.m;
+
+    View1D g("lbfgs_g", n), g_new("lbfgs_gnew", n), d("lbfgs_d", n);
+    View1D q("lbfgs_q", n), x0("lbfgs_x0", n), s_tmp("lbfgs_s", n), y_tmp("lbfgs_y", n);
+    std::vector<View1D> S(m), Y(m);
+    for (int k = 0; k < m; ++k) {
+        S[k] = View1D("lbfgs_S", n);
+        Y[k] = View1D("lbfgs_Y", n);
+    }
+    std::vector<real_t> rho(m, 0.0);
+    std::vector<int> slots;  // chronological row indices, back() = newest
+    real_t gamma = 1.0;      // H0 scaling
+
+    gradient(h, p, noise, g);
+    LbfgsResult res;
+    int ls_fail_streak = 0;
+
+    for (int it = 0; it < lp.max_iter; ++it) {
+        const real_t gmax = lbfgs_max_abs(n, g);
+        if (gmax < lp.ftol) {
+            res.iterations = it;
+            res.max_force = gmax;
+            res.converged = true;
+            return res;
+        }
+
+        // ---- two-loop recursion: d = -H g ----
+        Kokkos::deep_copy(q, g);
+        const int hs = static_cast<int>(slots.size());
+        std::vector<real_t> la(hs);
+        for (int idx = hs - 1; idx >= 0; --idx) {
+            const int row = slots[idx];
+            const real_t a = rho[row] * lbfgs_dot(n, S[row], q);
+            la[idx] = a;
+            lbfgs_axpy(n, -a, Y[row], q);  // q -= a y
+        }
+        const real_t g0 = slots.empty() ? static_cast<real_t>(1) : gamma;
+        Kokkos::parallel_for(
+            "lbfgs_scale", n, KOKKOS_LAMBDA(const int i) { d(i) = g0 * q(i); });
+        for (int idx = 0; idx < hs; ++idx) {
+            const int row = slots[idx];
+            const real_t b = rho[row] * lbfgs_dot(n, Y[row], d);
+            lbfgs_axpy(n, la[idx] - b, S[row], d);  // d += (a-b) s
+        }
+        Kokkos::parallel_for(
+            "lbfgs_neg", n, KOKKOS_LAMBDA(const int i) { d(i) = -d(i); });
+
+        // Ensure a descent direction; otherwise fall back to steepest descent.
+        real_t dphi0 = lbfgs_dot(n, g, d);
+        if (dphi0 >= 0) {
+            slots.clear();
+            Kokkos::parallel_for(
+                "lbfgs_sd", n, KOKKOS_LAMBDA(const int i) { d(i) = -g(i); });
+            dphi0 = -lbfgs_dot(n, g, g);
+        }
+
+        // ---- Armijo backtracking line search ----
+        Kokkos::deep_copy(x0, h);
+        const real_t phi0 = objective(h, p, noise);  // h == x0 here
+        ++res.n_func_evals;
+        // First (steepest-descent) step: scale by 1/|g| to avoid overshoot.
+        real_t alpha = slots.empty()
+                           ? static_cast<real_t>(1) /
+                                 std::max(static_cast<real_t>(1),
+                                          std::sqrt(lbfgs_dot(n, g, g)))
+                           : static_cast<real_t>(1);
+        bool ok = false;
+        for (int ls = 0; ls < lp.max_ls; ++ls) {
+            const real_t al = alpha;
+            Kokkos::parallel_for(
+                "lbfgs_trial", n,
+                KOKKOS_LAMBDA(const int i) { h(i) = x0(i) + al * d(i); });
+            const real_t phi = objective(h, p, noise);
+            ++res.n_func_evals;
+            if (phi <= phi0 + lp.c1 * alpha * dphi0) {
+                ok = true;
+                break;
+            }
+            alpha *= lp.ls_shrink;
+        }
+        if (!ok) {
+            Kokkos::deep_copy(h, x0);  // undo the failed trial
+            if (slots.empty() || ++ls_fail_streak > 2) {
+                res.iterations = it;
+                res.max_force = gmax;
+                res.converged = false;
+                return res;
+            }
+            slots.clear();  // reset history, retry as steepest descent
+            continue;
+        }
+        ls_fail_streak = 0;
+
+        // ---- curvature pair s = alpha d, y = g_new - g ----
+        gradient(h, p, noise, g_new);
+        const real_t al = alpha;
+        Kokkos::parallel_for(
+            "lbfgs_sy", n, KOKKOS_LAMBDA(const int i) {
+                s_tmp(i) = al * d(i);
+                y_tmp(i) = g_new(i) - g(i);
+            });
+        const real_t sy = lbfgs_dot(n, s_tmp, y_tmp);
+        const real_t ss = lbfgs_dot(n, s_tmp, s_tmp);
+        const real_t yy = lbfgs_dot(n, y_tmp, y_tmp);
+        if (sy > lp.curvature_eps * std::sqrt(ss * yy)) {  // skip safeguard
+            int row;
+            if (static_cast<int>(slots.size()) < m) {
+                row = static_cast<int>(slots.size());
+            } else {
+                row = slots.front();
+                slots.erase(slots.begin());
+            }
+            Kokkos::deep_copy(S[row], s_tmp);
+            Kokkos::deep_copy(Y[row], y_tmp);
+            rho[row] = static_cast<real_t>(1) / sy;
+            gamma = sy / yy;
+            slots.push_back(row);
+        }
+        Kokkos::deep_copy(g, g_new);
+    }
+
+    res.iterations = lp.max_iter;
+    res.max_force = lbfgs_max_abs(n, g);
+    res.converged = false;
+    return res;
+}
+
+}  // namespace qew
+
+#endif  // QEW_LBFGS_H

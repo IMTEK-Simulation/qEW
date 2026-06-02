@@ -1,186 +1,121 @@
-# CMake skeleton code
+# qEW — C++/Kokkos GPU port
 
-This repository contains a [CMake](https://cmake.org/) skeleton for C++ projects. It has provision
-for dependencies on the numerical libraries
+A C++ port of the Python quenched Edwards–Wilkinson (qEW) dislocation-line model
+in [`../Overleaf/qEW/`](../Overleaf/qEW), built on [Kokkos](https://kokkos.org/)
+so the heavy runs (energy minimization, depinning, Brownian dynamics) execute on
+a GPU. It accompanies the paper *"Fractal structure, depinning, and hysteresis
+of dislocations in high-entropy alloys"* (Le et al., arXiv:2410.21838).
 
-* [Eigen3](https://eigen.tuxfamily.org/)
-* [Kokkos](https://kokkos.org/)
-* [MPI](https://www.mpi-forum.org/)
+The full design rationale and porting log are in [`PLAN.md`](PLAN.md).
 
-## Getting started
+## What it computes
 
-Click the `Use this template` button above, then clone the newly created
-repository.
+A 1-D line `h(x)` relaxing in a correlated random pinning field, with either a
+harmonic (`linear`) or geometric line-tension (`arclength`) elastic term:
 
-### Compiling using CLion
+- **Statics** — relax to a local minimum (L-BFGS), sweeping the pinning length.
+- **Dynamics** — finite-temperature overdamped Langevin time integration.
+- **Depinning** — the critical configuration and threshold force `f_c` via the
+  Rosso–Krauth no-passing construction (Rosso & Krauth, *Phys. Rev. E* **65**,
+  025101(R), 2002).
 
-> Note: for Windows users, please follow [these
-> instructions](https://www.jetbrains.com/help/clion/how-to-use-wsl-development-environment-in-product.html)
-> in addition to the text below.
+## Dependencies
 
-If you are using CLion, you can open your freshly cloned project by clicking on
-the "Open" button in the CLion welcome window. If prompted, trust the project.
+All fetched automatically (CMake `FetchContent`) if not installed:
 
-You can change CMake build option in "**File > Settings > Build, Execution, Deployment > CMake**".
-This windows allows to set the `CMAKE_BUILD_TYPE` option, which controls the level of optimization applied to
-the code. `Debug` disables optimizations and turns on useful debugging features.
-This mode should be used when developing and testing code.
-`Release` turns on aggressive optimization. This mode should be used when
-running production simulations. Add `-DCMAKE_BUILD_TYPE=Release` or `-DCMAKE_BUILD_TYPE=Debug` to "CMake options"
-to switch between the two.
+- **Kokkos 5.1.1** — on-node parallelism / GPU backend. Requires **C++20**.
+- **pocketfft** — header-only FFT (host-side, for noise-field generation).
+- **HDF5 + HighFive** — *optional*, for `.h5` I/O. Auto-detected via
+  `find_package(HDF5)`; without it the library still builds and the
+  HDF5-dependent tests and executables are simply skipped.
 
-To run the executable, click on the dialog directly right of the
-green hammer in the upper right toolbar, select "main", and click
-the green arrow right of that dialog. You should see the output in the "Run"
-tab, in the lower main window.
+No MPI, no Eigen3.
 
-To run the tests, select "tests" in the same dialog, then run. In the lower
-window, on the right, appears a panel that enumerates all the tests that were
-run and their results.
+## Build & test
 
-Try compiling and running for both `Debug` and `Release` configurations. Don't
-forget to switch between them when testing code or running production simulations.
-
-### Compiling from the command line
-
-The command line (terminal) may look daunting at first, but it has the advantage
-of being the same across all UNIX platforms, and does not depend on a specific
-IDE. The standard CMake workflow is to create a `build/` directory which will
-contain all the build files. To do that, and compile your project, run:
-
-```bash
-cd <your repository>
-
-# Configure and create build directory
-cmake -B build
-
-# Compile
-cmake --build build
-
-# Run executable and tests
-./build/executables/main
-cd build && ctest
-```
-
-Note that CLion is by default configured to create a `cmake-build-debug/` directory.
-
-If there are no errors then you are all set! Note that the flag
-`-DCMAKE_BUILD_TYPE=Debug` should be changed to
-`-DCMAKE_BUILD_TYPE=Release` when you run a production simulation, i.e. a
-simulation with more than a few hundred atoms. This turns on aggressive compiler
-optimizations, which results in speedup. However, when writing the code and
-looking for bugs, `Debug` should be used instead.
-
-Try compiling and running tests with both compilation configurations.
-
-### Compiling on bwUniCluster, with MPI
-
-The above steps should be done *after* loading the appropriate packages:
-
-```bash
-module load compiler/gnu mpi/openmpi
-
-# configure
+```sh
 cmake -B build -DCMAKE_BUILD_TYPE=Release
-# compile
 cmake --build build
+cd build && ctest --output-on-failure        # 24 tests
 ```
 
-## How to add code to the repository
+The default build targets the CPU (Kokkos `Serial`), so `ctest` passes on any
+machine. For a GPU build, add the matching Kokkos backend at configure time:
 
-There are three places where you are asked to add code:
-
-- `src/` is the core of the code. Code common to all executables and tests
-  you will run should be added here. The `CMakeLists.txt` file in `src/` creates a
-  [static library](https://en.wikipedia.org/wiki/Static_library) which is linked
-  to all the other targets in the repository, and which propagates its dependency,
-  so that there is no need to explicitly link against Eigen or MPI.
-- `tests/` contains tests for the library code code. It uses
-  [GoogleTest](https://google.github.io/googletest/) to define short, simple
-  test cases.
-- `executables/` contains the final executable codes, i.e. it needs a `main()`
-  function.
-
-### Adding to `src/`
-
-Adding files to `src/` is straightforward: create your files, e.g. `lj.h` and
-`lj.cpp`, then update the `add_library` command in
-`src/CMakeLists.txt`:
-
-```cmake
-add_library(lib STATIC 
-    hello.cpp
-    lj.cpp
-)
+```sh
+cmake -B build -DCMAKE_BUILD_TYPE=Release -DKokkos_ENABLE_CUDA=ON   # NVIDIA
+# or                                       -DKokkos_ENABLE_HIP=ON   # AMD
 ```
 
-### Adding to `tests/`
+The same kernels then run on the device. Tests run on the default execution
+space, so a GPU build exercises the GPU path.
 
-Create your test file, e.g. `test_verlet.cpp` in `tests/`, then modify the
-`TEST_SOURCES` variable in `tests/CMakeLists.txt`. Test that your test was
-correctly added by running `cmake --build build` in the root directory: your test should
-show up in the output of `ctest`.
+> Note: HighFive 2.x declares `cmake_minimum_required` < 3.5, which CMake ≥ 4
+> rejects; the root `CMakeLists.txt` sets `CMAKE_POLICY_VERSION_MINIMUM=3.5`
+> (scoped to the HighFive fetch) to work around this.
 
-### Adding to `executables/`
+## Running the simulations
 
-Create a new directory, e.g. with `mkdir executables/04`, then add `add_subdirectory(04)`
-to `executables/CMakeLists.txt`, then create & edit
-`executables/04/CMakeLists.txt`:
+Each executable is configured by module-level constants at the top of its
+`main.cpp` (no command-line arguments), matching the Python convention.
 
-```cmake
-add_executable(milestone04 main.cpp)
-target_link_libraries(milestone04 PRIVATE lib)
+```sh
+./build/executables/qew_static/qew_static        # -> static_arclength.h5
+./build/executables/qew_dynamic/qew_dynamic      # -> dynamic_arclength.h5
+./build/executables/qew_depinning/qew_depinning  # -> depinning_arclength.h5
 ```
 
-You can now create & edit `executables/04/main.cpp`, which should include a
-`main()` function as follows:
+| Executable | Method | Mirrors |
+|---|---|---|
+| `qew_static` | L-BFGS minimization, sweep pinning length | `qew_static.py` |
+| `qew_dynamic` | annealed Langevin (Euler–Maruyama) | `qew_dynamic.py` |
+| `qew_depinning` | Rosso–Krauth force ramp toward `f_c` | `qew_depinning.py` |
 
-```c++
-int main(int argc, char* argv[]) {
-    return 0;
-}
+## Analysis stays in Python
+
+The executables write only the relaxed profiles `h` (+ metadata) under the same
+HDF5 keys the Python scripts use. To add the analysis datasets
+(`ell`/`acf`/`q`/`psd`) that the figure script reads — computed by the validated
+`../Overleaf/qEW/qew_analysis.py` — run:
+
+```sh
+python3 tools/postprocess_static.py static_arclength.h5
 ```
 
-The code of your simulation goes into the `main()` function.
+The augmented file is then readable by `../Overleaf/qEW/plot.py` unchanged.
+(Despite the name, `postprocess_static.py` works on any of the output files —
+it processes every `.../h` dataset.)
 
-#### Input files
+## Source layout
 
-We often provide input files (`.xyz` files) for your simulations, for example in
-milestone 4. You should place these in e.g. `executables/04/`, and add the
-following to `executables/04/CMakeLists.txt`:
-
-```cmake
-configure_file(lj54.xyz lj54.xyz COPYONLY)
+```
+src/
+  qew_types.h          real_t, execution/memory spaces, View aliases, NoiseSample
+  qew_model.h          objective() + gradient(), linear & arclength (templated on noise)
+  filtered_noise.{h,cpp}  random-phase FFT noise + periodic cubic-B-spline prefilter (host);
+                          device bicubic sample() with analytic derivatives
+  fire.h               FIRE minimizer (fallback / cross-check)
+  lbfgs.h              default static minimizer (Nocedal two-loop + Armijo + curvature skip)
+  dynamics.h           overdamped Langevin (Kokkos RNG)
+  rosso_krauth.h       depinning: per-site velocity-zero + red-black forward relaxation
+executables/<name>/    one main.cpp per simulation (+ the original `main` skeleton)
+tests/                 GoogleTest suite; tests/data/ holds golden fixtures + their gen_*.py
+tools/postprocess_static.py   add acf/psd to an output file (uses the Python analysis)
 ```
 
-This will copy the file `executables/04/lj54.xyz` to
-`<build>/executables/04/lj54.xyz`, but **only** when CMake is reconfigured.
+## Validation
 
-*Note:* `.xyz` files are ignored by Git. That's on purpose to avoid you staging
-very large files in the git tree.
+Correctness is pinned by:
 
-## Pushing code to GitHub
+- a **gradient-consistency** test (analytic gradient vs finite-difference of the
+  objective, both models);
+- **golden-file** cross-checks against SciPy for the noise interpolation and for
+  the L-BFGS minimum (regenerate with `tests/data/gen_*.py`);
+- an **analytic depinning threshold** (washboard potential, `f_c = A·k`) for
+  Rosso–Krauth;
+- equipartition `⟨E⟩ = (N/2)kT` for the Langevin integrator.
 
-If you have added files to your local repositories, you should commit and push them to
-GitHub. To create a new commit (i.e. put your files in the repository's
-history), simply run:
-
-```bash
-git status
-# Look at the files that need to be added
-git add <files> ...
-git commit -m '<a meaningful commit message!>'
-git push
-```
-
-This repository is setup with continuous integration (CI), so all your tests
-will run automatically when you push. This is very handy to test if you have
-breaking changes.
-
-### Git in CLion
-
-If you are using CLion, you can use Git directly from its interface. To add
-files, right click the file you wish to add, then "Git > Add". Once you are
-ready to commit, "Git > Commit" from the main menu bar. Add a message in the
-lower left window where it reads "Commit message", then click "Commit" or
-"Commit and Push...".
+**Known limitation:** unpreconditioned L-BFGS (and FIRE) converge slowly on very
+stiff lines — the elastic term is the ill-conditioned discrete Laplacian
+(condition ~ N²). The roughness results are unaffected (same Hurst exponent); a
+FFT/Laplacian preconditioner is the intended optimization.

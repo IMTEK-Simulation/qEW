@@ -18,6 +18,8 @@ set(TEST_SOURCES
     test_filtered_noise.cpp
     test_fire.cpp
     test_dynamics.cpp
+    test_lbfgs.cpp
+    test_rosso_krauth.cpp
 )
 
 # Kokkos-aware GoogleTest entry point (initializes/finalizes Kokkos around the
@@ -33,7 +35,8 @@ target_include_directories(tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 if(QEW_WITH_HDF5)
     target_compile_definitions(tests PRIVATE
         QEW_WITH_HDF5
-        QEW_GOLDEN_PATH="${CMAKE_CURRENT_SOURCE_DIR}/data/noise_golden.h5")
+        QEW_GOLDEN_PATH="${CMAKE_CURRENT_SOURCE_DIR}/data/noise_golden.h5"
+        QEW_LBFGS_GOLDEN_PATH="${CMAKE_CURRENT_SOURCE_DIR}/data/lbfgs_golden.h5")
     target_link_libraries(tests PRIVATE HighFive)
 endif()
 

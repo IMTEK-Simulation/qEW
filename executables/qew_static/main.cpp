@@ -16,7 +16,7 @@
 #include <highfive/H5File.hpp>
 
 #include "filtered_noise.h"
-#include "fire.h"
+#include "lbfgs.h"
 #include "qew_model.h"
 #include "qew_types.h"
 
@@ -44,7 +44,6 @@ int main(int argc, char *argv[]) {
         const std::vector<double> pinning_lengths = {0.01, 0.1, 1.0, 10.0, 100.0};
         const std::uint64_t seed = 1;
 
-        const real_t dx = Lx / nx;
         FilteredNoise noise(nx, ny, Lx, Ly, amplitude, xi, xi, seed);
         const DeviceNoise dn = noise.device_noise();
 
@@ -62,14 +61,15 @@ int main(int argc, char *argv[]) {
             View1D h("h", nx);
             Kokkos::deep_copy(h, static_cast<real_t>(0.5) * Ly);  // flat start
 
-            FireParams fp;
-            // Stability estimate combining elastic (4 lt/dx) and noise
-            // (~dx A/xi^2) curvature; FIRE adapts dt downward as needed.
-            fp.dt_max = static_cast<real_t>(0.1) /
-                        std::sqrt(4 * p.line_tension / dx + dx * amplitude / (xi * xi));
-            fp.ftol = 1e-7;
-            fp.max_iter = 200000;
-            const FireResult r = fire_minimize(h, p, dn, fp);
+            LbfgsParams opt;
+            // 1e-6 on max|force| is ample for roughness analysis. Very stiff
+            // lines are the ill-conditioned discrete Laplacian (cond ~ N^2):
+            // unpreconditioned L-BFGS plateaus there (~5e-6) and won't reach
+            // ftol -- the iterate is essentially converged for roughness (same
+            // Hurst as FIRE). A FFT/Laplacian preconditioner is future work.
+            opt.ftol = 1e-6;
+            opt.max_iter = 5000;
+            const LbfgsResult r = lbfgs_minimize(h, p, dn, opt);
 
             auto hh = Kokkos::create_mirror_view(h);
             Kokkos::deep_copy(hh, h);
