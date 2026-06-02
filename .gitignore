@@ -2,6 +2,12 @@
 *.xyz
 .idea
 
+# CMake build directories (build/, build_omp/, ...)
+build*/
+
+# Simulation outputs (the small golden fixtures in tests/data/ are committed)
+/*.h5
+
 # -------------- Below are genereated exclusion patterns ----------------------
 
 # Created by https://www.toptal.com/developers/gitignore/api/clion

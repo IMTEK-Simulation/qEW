@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+# Cancel superseded runs on the same ref.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: serial            # Kokkos Serial backend, single-threaded
+            cmake_flags: ""
+            threads: "1"
+          - name: openmp            # Kokkos OpenMP backend, multi-threaded
+            cmake_flags: "-DKokkos_ENABLE_OPENMP=ON"
+            threads: "4"
+    steps:
+      - uses: actions/checkout@v4
+
+      # HDF5 enables the .h5 I/O and the golden-file tests; the golden fixtures
+      # (tests/data/*.h5) are committed, so no Python is needed in CI.
+      - name: Install HDF5
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libhdf5-dev
+
+      # Cache compiled objects (Kokkos dominates build time) across runs.
+      - name: ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: ${{ matrix.name }}
+
+      - name: Configure
+        run: >
+          cmake -B build
+          -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+          ${{ matrix.cmake_flags }}
+
+      - name: Build
+        run: cmake --build build -j$(nproc)
+
+      - name: Test (${{ matrix.name }})
+        working-directory: build
+        env:
+          OMP_NUM_THREADS: ${{ matrix.threads }}
+          OMP_PROC_BIND: spread
+          OMP_PLACES: threads
+        run: ctest --output-on-failure

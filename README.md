@@ -39,16 +39,27 @@ cmake --build build
 cd build && ctest --output-on-failure        # 24 tests
 ```
 
-The default build targets the CPU (Kokkos `Serial`), so `ctest` passes on any
-machine. For a GPU build, add the matching Kokkos backend at configure time:
+The default build targets a single CPU core (Kokkos `Serial`), so `ctest` passes
+on any machine. Select a different Kokkos backend at configure time:
 
 ```sh
+# multi-threaded CPU (OpenMP)
+cmake -B build_omp -DCMAKE_BUILD_TYPE=Release -DKokkos_ENABLE_OPENMP=ON
+cmake --build build_omp
+OMP_NUM_THREADS=8 OMP_PROC_BIND=spread OMP_PLACES=threads \
+    ctest --test-dir build_omp --output-on-failure
+
+# GPU
 cmake -B build -DCMAKE_BUILD_TYPE=Release -DKokkos_ENABLE_CUDA=ON   # NVIDIA
 # or                                       -DKokkos_ENABLE_HIP=ON   # AMD
 ```
 
-The same kernels then run on the device. Tests run on the default execution
-space, so a GPU build exercises the GPU path.
+The same kernels run on whichever backend is selected. **Tests run on the
+default execution space**, so an OpenMP build runs them multi-threaded and a GPU
+build runs them on the device — the suite passes in all three (Serial, OpenMP,
+GPU-ready). The determinism tests double as a race / reproducibility check under
+threading. Set `OMP_NUM_THREADS` to pick the thread count (and `OMP_PROC_BIND` /
+`OMP_PLACES` for best performance, as Kokkos recommends).
 
 > Note: HighFive 2.x declares `cmake_minimum_required` < 3.5, which CMake ≥ 4
 > rejects; the root `CMakeLists.txt` sets `CMAKE_POLICY_VERSION_MINIMUM=3.5`
