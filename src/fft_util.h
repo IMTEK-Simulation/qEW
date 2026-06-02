@@ -5,10 +5,10 @@
 
 namespace qew {
 
-// Phase-1 smoke test for pocketfft: forward then inverse complex-to-complex
-// 1-D FFT of a fixed signal, returning the maximum absolute round-trip error.
-// A correctly linked pocketfft returns a value near machine epsilon. The real
-// noise-field FFT lands in src/filtered_noise.cpp in Phase 3.
+// Smoke test for kokkos-fft: forward then inverse complex FFT of a fixed signal
+// on the default execution space, returning the maximum absolute round-trip
+// error. A correctly linked kokkos-fft (FFTW on host, hipFFT/cuFFT on GPU)
+// returns a value near machine epsilon.
 double fft_roundtrip_error(std::size_t n);
 
 }  // namespace qew

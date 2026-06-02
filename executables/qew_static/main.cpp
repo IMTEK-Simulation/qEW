@@ -62,13 +62,16 @@ int main(int argc, char *argv[]) {
             Kokkos::deep_copy(h, static_cast<real_t>(0.5) * Ly);  // flat start
 
             LbfgsParams opt;
-            // 1e-6 on max|force| is ample for roughness analysis. Very stiff
-            // lines are the ill-conditioned discrete Laplacian (cond ~ N^2):
-            // unpreconditioned L-BFGS plateaus there (~5e-6) and won't reach
-            // ftol -- the iterate is essentially converged for roughness (same
-            // Hurst as FIRE). A FFT/Laplacian preconditioner is future work.
-            opt.ftol = 1e-6;
+            opt.ftol = 1e-6;  // ample for roughness analysis
             opt.max_iter = 5000;
+            // Inverse-Laplacian FFT preconditioner: removes the stiff lines'
+            // ill-conditioning (cond ~ N^2). The shift is the pinning
+            // (non-elastic) curvature scale ~ dx*A/xi^2, so the preconditioner
+            // degrades to a well-scaled scalar step on floppy lines (where the
+            // elastic term is negligible) and is the true Laplacian inverse on
+            // stiff ones.
+            opt.precondition = true;
+            opt.precond_shift = static_cast<real_t>(0.5) * (Lx / nx) * amplitude / (xi * xi);
             const LbfgsResult r = lbfgs_minimize(h, p, dn, opt);
 
             auto hh = Kokkos::create_mirror_view(h);

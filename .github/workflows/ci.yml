@@ -26,12 +26,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # HDF5 enables the .h5 I/O and the golden-file tests; the golden fixtures
-      # (tests/data/*.h5) are committed, so no Python is needed in CI.
-      - name: Install HDF5
+      # FFTW is kokkos-fft's host (Serial/OpenMP) backend; HDF5 enables the .h5
+      # I/O and golden-file tests. The golden fixtures (tests/data/*.h5) are
+      # committed, so no Python is needed in CI.
+      - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libhdf5-dev
+          sudo apt-get install -y libfftw3-dev libhdf5-dev
 
       # Cache compiled objects (Kokkos dominates build time) across runs.
       - name: ccache

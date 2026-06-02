@@ -21,12 +21,15 @@ harmonic (`linear`) or geometric line-tension (`arclength`) elastic term:
 All fetched automatically (CMake `FetchContent`) if not installed:
 
 - **Kokkos 5.1.1** — on-node parallelism / GPU backend. Requires **C++20**.
-- **pocketfft** — header-only FFT (host-side, for noise-field generation).
+- **kokkos-fft v1.1.0** — FFTs on Kokkos Views (noise setup + the L-BFGS
+  preconditioner). Its backend follows the Kokkos backend: **FFTW** on the host
+  (so CPU builds need **`libfftw3-dev`**), **hipFFT/rocFFT** on HIP (MI300A),
+  cuFFT on CUDA.
 - **HDF5 + HighFive** — *optional*, for `.h5` I/O. Auto-detected via
   `find_package(HDF5)`; without it the library still builds and the
   HDF5-dependent tests and executables are simply skipped.
 
-No MPI, no Eigen3.
+No MPI, no Eigen3. (Host builds: `sudo apt-get install libfftw3-dev libhdf5-dev`.)
 
 ## Build & test
 
@@ -57,10 +60,11 @@ cmake -B build_hip -DCMAKE_BUILD_TYPE=Release \
 # (discrete MI300X: drop the _APU suffix -> -DKokkos_ARCH_AMD_GFX942=ON)
 ```
 
-Only Kokkos targets the device — the FFT-based noise setup (pocketfft) and HDF5
-I/O stay on the host CPU, so no GPU FFT library is needed. All host access to
-device data goes through `create_mirror_view`/`deep_copy`, so the code is correct
-on both discrete and unified (APU) memory.
+FFTs run through kokkos-fft on the active backend (FFTW on host, hipFFT/cuFFT on
+GPU) — used both for the one-time noise setup and for the per-iteration L-BFGS
+preconditioner. HDF5 I/O stays on the host. All host access to device data goes
+through `create_mirror_view`/`deep_copy`, so the code is correct on discrete and
+unified (APU) memory.
 
 The same kernels run on whichever backend is selected. **Tests run on the
 default execution space**, so an OpenMP build runs them multi-threaded and a GPU
@@ -114,7 +118,8 @@ src/
   filtered_noise.{h,cpp}  random-phase FFT noise + periodic cubic-B-spline prefilter (host);
                           device bicubic sample() with analytic derivatives
   fire.h               FIRE minimizer (fallback / cross-check)
-  lbfgs.h              default static minimizer (Nocedal two-loop + Armijo + curvature skip)
+  lbfgs.h              default static minimizer (Nocedal two-loop + Armijo + curvature skip
+                       + optional inverse-Laplacian FFT preconditioner via kokkos-fft)
   dynamics.h           overdamped Langevin (Kokkos RNG)
   rosso_krauth.h       depinning: per-site velocity-zero + red-black forward relaxation
 executables/<name>/    one main.cpp per simulation (+ the original `main` skeleton)
@@ -134,7 +139,7 @@ Correctness is pinned by:
   Rosso–Krauth;
 - equipartition `⟨E⟩ = (N/2)kT` for the Langevin integrator.
 
-**Known limitation:** unpreconditioned L-BFGS (and FIRE) converge slowly on very
-stiff lines — the elastic term is the ill-conditioned discrete Laplacian
-(condition ~ N²). The roughness results are unaffected (same Hurst exponent); a
-FFT/Laplacian preconditioner is the intended optimization.
+**Stiff lines:** the elastic term is the ill-conditioned discrete Laplacian
+(condition ~ N²), which stalls plain L-BFGS/FIRE. `qew_static` enables the
+inverse-Laplacian **FFT preconditioner** (`LbfgsParams::precondition`, via
+kokkos-fft `rfft`/`irfft` with reused plans), which restores fast convergence.

@@ -24,24 +24,18 @@ if(NOT Kokkos_FOUND)
     FetchContent_MakeAvailable(kokkos)
 endif()
 
-# pocketfft: header-only C++ FFT (the same code NumPy/SciPy vendor). Host-side
-# only — used once at setup to build the correlated noise field, never in the
-# hot loop, so no GPU FFT is required. The 'cpp' branch ships a single header
-# (pocketfft_hdr.h) and no CMakeLists, so we wrap it in an INTERFACE target.
+# kokkos-fft: FFTs on Kokkos Views, on whatever backend the Views live on (FFTW
+# on the host -- needs libfftw3-dev; hipFFT/rocFFT on HIP/MI300A; cuFFT on CUDA).
+# Used for the noise generation/prefilter (setup) and the L-BFGS preconditioner
+# (hot loop). MUST be fetched AFTER Kokkos: kokkos-fft reuses the existing
+# Kokkos::kokkos target instead of find_package'ing an installed one.
 include(FetchContent)
 FetchContent_Declare(
-  pocketfft
-  GIT_REPOSITORY https://gitlab.mpcdf.mpg.de/mtr/pocketfft.git
-  GIT_TAG cpp
+  kokkosfft
+  GIT_REPOSITORY https://github.com/kokkos/kokkos-fft.git
+  GIT_TAG v1.1.0
 )
-FetchContent_MakeAvailable(pocketfft)
-if(NOT TARGET pocketfft)
-    add_library(pocketfft INTERFACE)
-    target_include_directories(pocketfft INTERFACE ${pocketfft_SOURCE_DIR})
-    # The one-time setup FFT does not need pocketfft's threading layer; disabling
-    # it avoids a pthread link dependency.
-    target_compile_definitions(pocketfft INTERFACE POCKETFFT_NO_MULTITHREADING)
-endif()
+FetchContent_MakeAvailable(kokkosfft)
 
 # HDF5 I/O (optional): needed to read/write .h5 matching the Python key strings
 # and to load golden-file test fixtures. Guarded so the project still configures

@@ -1,36 +1,38 @@
 #include "fft_util.h"
 
-#include <algorithm>
-#include <complex>
-#include <vector>
+#include <Kokkos_Core.hpp>
+#include <KokkosFFT.hpp>
 
-#include "pocketfft_hdronly.h"
+#include "qew_types.h"
 
 namespace qew {
 
 double fft_roundtrip_error(std::size_t n) {
-    using cpx = std::complex<double>;
+    using cview = Kokkos::View<Kokkos::complex<real_t> *, MemSpace>;
+    const int m = static_cast<int>(n);
 
-    std::vector<cpx> in(n), fwd(n), back(n);
-    for (std::size_t i = 0; i < n; ++i) {
-        // Arbitrary deterministic signal.
-        in[i] = cpx(static_cast<double>(i % 7) - 3.0,
-                    static_cast<double>((2 * i) % 5) - 2.0);
+    cview x("x", n), xhat("xhat", n), xinv("xinv", n);
+    auto xh = Kokkos::create_mirror_view(x);
+    for (int i = 0; i < m; ++i) {
+        xh(i) = Kokkos::complex<real_t>(static_cast<real_t>(i % 7) - 3,
+                                        static_cast<real_t>((2 * i) % 5) - 2);
     }
+    Kokkos::deep_copy(x, xh);
 
-    const pocketfft::shape_t shape{n};
-    const pocketfft::stride_t stride{static_cast<std::ptrdiff_t>(sizeof(cpx))};
-    const pocketfft::shape_t axes{0};
+    ExecSpace exec;
+    KokkosFFT::fft(exec, x, xhat);    // forward (unnormalized)
+    KokkosFFT::ifft(exec, xhat, xinv);  // inverse (1/n) -> round-trip identity
+    exec.fence();
 
-    pocketfft::c2c(shape, stride, stride, axes, pocketfft::FORWARD, in.data(),
-                   fwd.data(), 1.0);
-    pocketfft::c2c(shape, stride, stride, axes, pocketfft::BACKWARD, fwd.data(),
-                   back.data(), 1.0 / static_cast<double>(n));
-
-    double max_err = 0.0;
-    for (std::size_t i = 0; i < n; ++i) {
-        max_err = std::max(max_err, std::abs(back[i] - in[i]));
-    }
+    real_t max_err = 0;
+    Kokkos::parallel_reduce(
+        "fft_roundtrip", m,
+        KOKKOS_LAMBDA(const int i, real_t &acc) {
+            const Kokkos::complex<real_t> d = xinv(i) - x(i);
+            const real_t a = Kokkos::sqrt(d.real() * d.real() + d.imag() * d.imag());
+            if (a > acc) acc = a;
+        },
+        Kokkos::Max<real_t>(max_err));
     return max_err;
 }
 

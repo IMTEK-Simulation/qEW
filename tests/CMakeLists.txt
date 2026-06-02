@@ -41,4 +41,12 @@ if(QEW_WITH_HDF5)
 endif()
 
 include(GoogleTest)
-gtest_discover_tests(tests)
+# Enumerate tests at `ctest` time (PRE_TEST), not at build time. The test binary
+# calls Kokkos::initialize(), so on a GPU build the default POST_BUILD discovery
+# would have to start the device *during the build* -- which fails on a GPU-less
+# login node (and can time out on slow first HIP init), surfacing as the
+# "tests_NOT_BUILT" sentinel. PRE_TEST defers listing to when you run ctest on a
+# GPU node. The longer timeout covers slow device initialization.
+gtest_discover_tests(tests
+    DISCOVERY_MODE PRE_TEST
+    DISCOVERY_TIMEOUT 120)

@@ -8,14 +8,13 @@
 #include <Kokkos_Core.hpp>
 #include <gtest/gtest.h>
 
+#include "filtered_noise.h"
 #include "fire.h"
 #include "qew_model.h"
 #include "qew_types.h"
 
 #ifdef QEW_WITH_HDF5
 #include <highfive/H5File.hpp>
-
-#include "filtered_noise.h"
 #endif
 
 using namespace qew;
@@ -145,6 +144,39 @@ TEST(Lbfgs, AgreesWithFire) {
     EXPECT_LT(max_diff, 1e-5);
 }
 
+// The FFT preconditioner makes a stiff line (ill-conditioned discrete Laplacian,
+// condition ~ N^2) converge in few iterations, where the unpreconditioned solver
+// stalls. Uses the real FilteredNoise energy (needs kokkos-fft, not HDF5).
+TEST(Lbfgs, PreconditionerOnStiffLine) {
+    const int nx = 256, ny = 64;
+    const real_t Lx = 2.56, Ly = 1.0;  // dx = 0.01 -> stiff Laplacian
+    FilteredNoise noise(nx, ny, Lx, Ly, /*amplitude=*/0.3, 0.2, 0.2, /*seed=*/5);
+
+    Params p;
+    p.physical_size = Lx;
+    p.line_tension = 50.0;  // strongly elastic-dominated
+    p.driving_force = 0.0;
+    p.model = Model::Linear;
+
+    // Preconditioned: should converge quickly.
+    View1D h = make_line(std::vector<real_t>(nx, 0.5 * Ly));
+    LbfgsParams opt;
+    opt.ftol = 1e-6;
+    opt.max_iter = 5000;
+    opt.precondition = true;
+    const LbfgsResult r = lbfgs_minimize(h, p, noise.device_noise(), opt);
+    EXPECT_TRUE(r.converged);
+    EXPECT_LT(r.iterations, 300);
+
+    // Unpreconditioned from the same start needs many more iterations; confirm
+    // the preconditioner is a large win.
+    View1D h2 = make_line(std::vector<real_t>(nx, 0.5 * Ly));
+    LbfgsParams opt2 = opt;
+    opt2.precondition = false;
+    const LbfgsResult r2 = lbfgs_minimize(h2, p, noise.device_noise(), opt2);
+    EXPECT_LT(r.iterations, r2.iterations);
+}
+
 #ifdef QEW_WITH_HDF5
 // Golden cross-check against SciPy's L-BFGS-B on the real FilteredNoise energy:
 // starting from the same configuration, the C++ minimum energy matches SciPy's.
@@ -179,6 +211,8 @@ TEST(Lbfgs, MatchesScipyGolden) {
     View1D h = make_line(h0);
     LbfgsParams lp;
     lp.ftol = 1e-8;
+    lp.precondition = true;  // stiff golden field: preconditioner reaches ftol
+                             // robustly (same minimum, hence same energy).
     const LbfgsResult r = lbfgs_minimize(h, p, noise.device_noise(), lp);
     EXPECT_TRUE(r.converged);
 

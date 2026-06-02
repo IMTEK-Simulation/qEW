@@ -5,4 +5,4 @@ add_library(lib STATIC
     filtered_noise.cpp
 )
 target_include_directories(lib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(lib PUBLIC Kokkos::kokkos pocketfft)
+target_link_libraries(lib PUBLIC Kokkos::kokkos KokkosFFT::fft)

@@ -2,9 +2,11 @@
 #define QEW_LBFGS_H
 
 #include <cmath>
+#include <optional>
 #include <vector>
 
 #include <Kokkos_Core.hpp>
+#include <KokkosFFT.hpp>
 
 #include "qew_model.h"
 #include "qew_types.h"
@@ -34,6 +36,18 @@ struct LbfgsParams {
     real_t ls_shrink = 0.5;        // backtracking factor
     int max_ls = 30;               // max backtracking steps
     real_t curvature_eps = 1e-12;  // skip pair if s.y <= eps |s||y|
+
+    // FFT preconditioner for stiff lines: use the inverse elastic (Laplacian)
+    // Hessian as the initial Hessian H0 (diagonalised by the FFT). Crushes the
+    // condition ~ N^2 that otherwise stalls L-BFGS on stiff lines.
+    bool precondition = false;
+    // Shift added to the elastic eigenvalues: physically the pinning
+    // (non-elastic) curvature scale (~ dx*A/xi^2). It regularises the k=0 zero
+    // mode AND makes the preconditioner degrade to a well-scaled scalar step on
+    // floppy lines (where elastic curvature is tiny). <=0 -> auto (smallest
+    // non-zero elastic eigenvalue), which is only adequate when elastic
+    // curvature dominates everywhere (stiff lines); set it explicitly otherwise.
+    real_t precond_shift = 0;
 };
 
 struct LbfgsResult {
@@ -95,6 +109,38 @@ LbfgsResult lbfgs_minimize(const View1D &h, const Params &p, const Noise &noise,
     std::vector<int> slots;  // chronological row indices, back() = newest
     real_t gamma = 1.0;      // H0 scaling
 
+    // ---- optional FFT (inverse-Laplacian) preconditioner ----
+    // H0 = M^{-1} with M the elastic Hessian, diagonalised by the FFT:
+    //   M^{-1} q = irfft( rfft(q) / ((kappa/dx) 4 sin^2(pi k/N) + shift) ).
+    // Plans are built once and reused (execute) each iteration.
+    ExecSpace exec;
+    const int nh = n / 2 + 1;
+    using CView1D = Kokkos::View<Kokkos::complex<real_t> *, MemSpace>;
+    CView1D qhat("lbfgs_qhat", lp.precondition ? nh : 0);
+    View1D eig("lbfgs_eig", lp.precondition ? nh : 0);
+    std::optional<KokkosFFT::Plan<ExecSpace, View1D, CView1D>> rfft_plan;
+    std::optional<KokkosFFT::Plan<ExecSpace, CView1D, View1D>> irfft_plan;
+    if (lp.precondition) {
+        const real_t kappa = p.line_tension;
+        const real_t dx = p.physical_size / static_cast<real_t>(n);
+        const real_t pi = static_cast<real_t>(3.14159265358979323846);
+        real_t shift = lp.precond_shift;
+        if (shift <= 0) {  // regularise k=0 with the smallest non-zero elastic mode
+            const real_t s1 = std::sin(pi / static_cast<real_t>(n));
+            shift = (kappa / dx) * 4 * s1 * s1;
+        }
+        const real_t kap = kappa, dxx = dx, sh = shift;
+        const int N = n;
+        Kokkos::parallel_for(
+            "lbfgs_eig", nh, KOKKOS_LAMBDA(const int k) {
+                const real_t s = Kokkos::sin(pi * static_cast<real_t>(k) /
+                                             static_cast<real_t>(N));
+                eig(k) = (kap / dxx) * 4 * s * s + sh;
+            });
+        rfft_plan.emplace(exec, q, qhat, KokkosFFT::Direction::forward, -1);
+        irfft_plan.emplace(exec, qhat, d, KokkosFFT::Direction::backward, -1);
+    }
+
     gradient(h, p, noise, g);
     LbfgsResult res;
     int ls_fail_streak = 0;
@@ -118,9 +164,18 @@ LbfgsResult lbfgs_minimize(const View1D &h, const Params &p, const Noise &noise,
             la[idx] = a;
             lbfgs_axpy(n, -a, Y[row], q);  // q -= a y
         }
-        const real_t g0 = slots.empty() ? static_cast<real_t>(1) : gamma;
-        Kokkos::parallel_for(
-            "lbfgs_scale", n, KOKKOS_LAMBDA(const int i) { d(i) = g0 * q(i); });
+        if (lp.precondition) {
+            // d = M^{-1} q : rfft(q) -> qhat; qhat /= eig; irfft(qhat) -> d.
+            KokkosFFT::execute(*rfft_plan, q, qhat);
+            Kokkos::parallel_for(
+                "lbfgs_precond", nh,
+                KOKKOS_LAMBDA(const int k) { qhat(k) = qhat(k) / eig(k); });
+            KokkosFFT::execute(*irfft_plan, qhat, d);
+        } else {
+            const real_t g0 = slots.empty() ? static_cast<real_t>(1) : gamma;
+            Kokkos::parallel_for(
+                "lbfgs_scale", n, KOKKOS_LAMBDA(const int i) { d(i) = g0 * q(i); });
+        }
         for (int idx = 0; idx < hs; ++idx) {
             const int row = slots[idx];
             const real_t b = rho[row] * lbfgs_dot(n, Y[row], d);
@@ -142,12 +197,13 @@ LbfgsResult lbfgs_minimize(const View1D &h, const Params &p, const Noise &noise,
         Kokkos::deep_copy(x0, h);
         const real_t phi0 = objective(h, p, noise);  // h == x0 here
         ++res.n_func_evals;
-        // First (steepest-descent) step: scale by 1/|g| to avoid overshoot.
-        real_t alpha = slots.empty()
-                           ? static_cast<real_t>(1) /
-                                 std::max(static_cast<real_t>(1),
-                                          std::sqrt(lbfgs_dot(n, g, g)))
-                           : static_cast<real_t>(1);
+        // alpha0 = 1 for L-BFGS / preconditioned steps (well-scaled direction);
+        // for an unpreconditioned first steepest-descent step, scale by 1/|g|.
+        real_t alpha = static_cast<real_t>(1);
+        if (!lp.precondition && slots.empty()) {
+            alpha = static_cast<real_t>(1) /
+                    std::max(static_cast<real_t>(1), std::sqrt(lbfgs_dot(n, g, g)));
+        }
         bool ok = false;
         for (int ls = 0; ls < lp.max_ls; ++ls) {
             const real_t al = alpha;

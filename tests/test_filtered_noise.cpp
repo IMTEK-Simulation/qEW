@@ -10,7 +10,8 @@
 #include <Kokkos_Core.hpp>
 #include <gtest/gtest.h>
 
-#include "pocketfft_hdronly.h"
+#include <KokkosFFT.hpp>
+
 #include "qew_model.h"
 #include "qew_types.h"
 
@@ -80,17 +81,19 @@ TEST(FilteredNoise, AmplitudeAndBandLimiting) {
     const double sd = std::sqrt(var / f.size());
     EXPECT_NEAR(sd, amplitude, 1e-10);
 
-    // Forward FFT and confirm masked modes are ~zero.
-    using cpx = std::complex<double>;
-    std::vector<cpx> a(static_cast<std::size_t>(nx) * ny);
-    for (std::size_t k = 0; k < a.size(); ++k) a[k] = cpx(f[k], 0);
-    const pocketfft::shape_t shape{static_cast<std::size_t>(nx),
-                                   static_cast<std::size_t>(ny)};
-    const pocketfft::stride_t stride{
-        static_cast<std::ptrdiff_t>(ny * sizeof(cpx)),
-        static_cast<std::ptrdiff_t>(sizeof(cpx))};
-    pocketfft::c2c(shape, stride, stride, {0, 1}, pocketfft::FORWARD, a.data(),
-                   a.data(), 1.0);
+    // Forward FFT (kokkos-fft) and confirm masked modes are ~zero.
+    using cplx = Kokkos::complex<double>;
+    Kokkos::View<cplx **, MemSpace> A("A", nx, ny), Ahat("Ahat", nx, ny);
+    auto Ah = Kokkos::create_mirror_view(A);
+    for (int i = 0; i < nx; ++i)
+        for (int j = 0; j < ny; ++j)
+            Ah(i, j) = cplx(f[static_cast<std::size_t>(i) * ny + j], 0);
+    Kokkos::deep_copy(A, Ah);
+    ExecSpace exec;
+    KokkosFFT::fft2(exec, A, Ahat);
+    exec.fence();
+    auto Hh = Kokkos::create_mirror_view(Ahat);
+    Kokkos::deep_copy(Hh, Ahat);
 
     double max_mag = 0, max_masked = 0;
     const double dx = Lx / nx, dy = Ly / ny;
@@ -100,7 +103,8 @@ TEST(FilteredNoise, AmplitudeAndBandLimiting) {
         for (int j = 0; j < ny; ++j) {
             const int ksy = (j < (ny + 1) / 2) ? j : j - ny;
             const double fy = ksy / (double)ny / dy;
-            const double mag = std::abs(a[static_cast<std::size_t>(i) * ny + j]);
+            const double re = Hh(i, j).real(), im = Hh(i, j).imag();
+            const double mag = std::sqrt(re * re + im * im);
             max_mag = std::max(max_mag, mag);
             if ((fx * xi_x) * (fx * xi_x) + (fy * xi_y) * (fy * xi_y) > 1.0)
                 max_masked = std::max(max_masked, mag);
