@@ -1,4 +1,4 @@
-# qEW — C++/Kokkos GPU port
+# Quenched Edwards-Wilkinson
 
 A quenched Edwards–Wilkinson (qEW) dislocation-line model, built on [Kokkos](https://kokkos.org/)
 so the heavy runs (energy minimization, depinning, Brownian dynamics) execute on
@@ -28,8 +28,6 @@ All fetched automatically (CMake `FetchContent`) if not installed:
 - **HDF5 + HighFive** — *optional*, for `.h5` I/O. Auto-detected via
   `find_package(HDF5)`; without it the library still builds and the
   HDF5-dependent tests and executables are simply skipped.
-
-No MPI, no Eigen3. (Host builds: `sudo apt-get install libfftw3-dev libhdf5-dev`.)
 
 ## Build & test
 
@@ -62,20 +60,14 @@ cmake -B build_hip -DCMAKE_BUILD_TYPE=Release \
 
 FFTs run through kokkos-fft on the active backend (FFTW on host, hipFFT/cuFFT on
 GPU) — used both for the one-time noise setup and for the per-iteration L-BFGS
-preconditioner. HDF5 I/O stays on the host. All host access to device data goes
-through `create_mirror_view`/`deep_copy`, so the code is correct on discrete and
-unified (APU) memory.
+preconditioner. HDF5 I/O stays on the host.
 
-The same kernels run on whichever backend is selected. **Tests run on the
-default execution space**, so an OpenMP build runs them multi-threaded and a GPU
+The same kernels run on whichever backend is selected. **Tests run on the default
+execution space**, so an OpenMP build runs them multi-threaded and a GPU
 build runs them on the device — the suite passes in all three (Serial, OpenMP,
 GPU-ready). The determinism tests double as a race / reproducibility check under
 threading. Set `OMP_NUM_THREADS` to pick the thread count (and `OMP_PROC_BIND` /
 `OMP_PLACES` for best performance, as Kokkos recommends).
-
-> Note: HighFive 2.x declares `cmake_minimum_required` < 3.5, which CMake ≥ 4
-> rejects; the root `CMakeLists.txt` sets `CMAKE_POLICY_VERSION_MINIMUM=3.5`
-> (scoped to the HighFive fetch) to work around this.
 
 ## Running the simulations
 
@@ -104,10 +96,6 @@ HDF5 keys the Python scripts use. To add the analysis datasets
 ```sh
 python3 tools/postprocess_static.py static_arclength.h5
 ```
-
-The augmented file is then readable by `../Overleaf/qEW/plot.py` unchanged.
-(Despite the name, `postprocess_static.py` works on any of the output files —
-it processes every `.../h` dataset.)
 
 ## Source layout
 
