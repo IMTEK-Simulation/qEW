@@ -1,12 +1,9 @@
 # qEW — C++/Kokkos GPU port
 
-A C++ port of the Python quenched Edwards–Wilkinson (qEW) dislocation-line model
-in [`../Overleaf/qEW/`](../Overleaf/qEW), built on [Kokkos](https://kokkos.org/)
+A quenched Edwards–Wilkinson (qEW) dislocation-line model, built on [Kokkos](https://kokkos.org/)
 so the heavy runs (energy minimization, depinning, Brownian dynamics) execute on
 a GPU. It accompanies the paper *"Fractal structure, depinning, and hysteresis
 of dislocations in high-entropy alloys"* (Le et al., arXiv:2410.21838).
-
-The full design rationale and porting log are in [`PLAN.md`](PLAN.md).
 
 ## What it computes
 
