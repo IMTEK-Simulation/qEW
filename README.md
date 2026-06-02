@@ -69,6 +69,22 @@ GPU-ready). The determinism tests double as a race / reproducibility check under
 threading. Set `OMP_NUM_THREADS` to pick the thread count (and `OMP_PROC_BIND` /
 `OMP_PLACES` for best performance, as Kokkos recommends).
 
+`executables/benchmark` times the hot kernels (gradient / objective / Langevin
+step) for thread-scaling studies:
+
+```sh
+for t in 1 2 4 8; do OMP_NUM_THREADS=$t OMP_PROC_BIND=spread \
+    build_omp/executables/benchmark/benchmark; done
+```
+
+On an 8-core CPU the kernels scale near-linearly to ~4 cores and ~4–5.6× at 8
+(the bicubic-gather gradient is memory-bandwidth-bound; SMT gives no reliable
+gain).
+
+> Note: HighFive 2.x declares `cmake_minimum_required` < 3.5, which CMake ≥ 4
+> rejects; the root `CMakeLists.txt` sets `CMAKE_POLICY_VERSION_MINIMUM=3.5`
+> (scoped to the HighFive fetch) to work around this.
+
 ## Running the simulations
 
 Each executable is configured by module-level constants at the top of its
@@ -110,7 +126,7 @@ src/
                        + optional inverse-Laplacian FFT preconditioner via kokkos-fft)
   dynamics.h           overdamped Langevin (Kokkos RNG)
   rosso_krauth.h       depinning: per-site velocity-zero + red-black forward relaxation
-executables/<name>/    one main.cpp per simulation (+ the original `main` skeleton)
+executables/<name>/    one main.cpp per simulation (+ `main` skeleton, `benchmark` thread-scaling test)
 tests/                 GoogleTest suite; tests/data/ holds golden fixtures + their gen_*.py
 tools/postprocess_static.py   add acf/psd to an output file (uses the Python analysis)
 ```
