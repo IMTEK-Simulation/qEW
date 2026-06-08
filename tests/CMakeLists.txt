@@ -20,6 +20,7 @@ set(TEST_SOURCES
     test_dynamics.cpp
     test_lbfgs.cpp
     test_rosso_krauth.cpp
+    test_executables.cpp
 )
 
 # Kokkos-aware GoogleTest entry point (initializes/finalizes Kokkos around the
