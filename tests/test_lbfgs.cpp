@@ -101,6 +101,45 @@ TEST(Lbfgs, ConvergesToHarmonicMinimum) {
     EXPECT_LT(max_dev, 1e-6);
 }
 
+// L-BFGS on the ARCLENGTH model: a flat line in a harmonic trough at y0 is still
+// the unique minimiser (the arclength elastic term vanishes for a flat line), so
+// it converges to h = y0. Every other L-BFGS test uses the linear model; this
+// exercises the arclength branch of objective()/gradient() through the solver.
+TEST(Lbfgs, ConvergesToHarmonicMinimumArclength) {
+    const int n = 96;
+    Params p = linear_params(n);
+    p.model = Model::Arclength;
+    HarmonicWell well{2.0, 0.5};
+    View1D h = make_line(std::vector<real_t>(n, 0.0));
+
+    LbfgsParams lp;
+    lp.ftol = 1e-9;
+    const LbfgsResult r = lbfgs_minimize(h, p, well, lp);
+
+    EXPECT_TRUE(r.converged);
+    const auto hf = to_host(h);
+    real_t max_dev = 0;
+    for (real_t v : hf) max_dev = std::max(max_dev, std::abs(v - well.y0));
+    EXPECT_LT(max_dev, 1e-6);
+}
+
+// Capped iterations report converged=false (the failure path callers branch on).
+// All other L-BFGS tests assert the success path.
+TEST(Lbfgs, ReportsNonConvergence) {
+    const int n = 96;
+    Params p = linear_params(n);
+    HarmonicWell well{2.0, 0.5};
+    View1D h = make_line(std::vector<real_t>(n, 0.0));
+
+    LbfgsParams lp;
+    lp.ftol = 1e-12;  // unreachable in one iteration
+    lp.max_iter = 1;
+    const LbfgsResult r = lbfgs_minimize(h, p, well, lp);
+
+    EXPECT_FALSE(r.converged);
+    EXPECT_GE(r.max_force, lp.ftol);
+}
+
 // On a quadratic problem L-BFGS converges in few iterations (vs FIRE's many).
 TEST(Lbfgs, FastOnQuadratic) {
     const int n = 128;

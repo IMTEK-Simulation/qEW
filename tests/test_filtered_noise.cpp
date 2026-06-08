@@ -229,6 +229,57 @@ TEST(FilteredNoise, GradientConsistentWithModel) {
     }
 }
 
+// The pinning field is periodic in BOTH directions, and sample() must wrap any
+// query coordinate -- including negative ones and many periods out -- back into
+// the fundamental cell. The depinning and dynamics runs drive h forward through
+// many periods of Ly (and the noise x is the edge-midpoint, which the periodic
+// h advances past Lx), so correct wrapping is load-bearing for the physics. No
+// other test queries outside [0,Lx) x [0,Ly); this pins it directly.
+TEST(FilteredNoise, PeriodicWrapAcrossManyCells) {
+    const int nx = 48, ny = 40;
+    const real_t Lx = 2.5, Ly = 1.3;
+    FilteredNoise noise(nx, ny, Lx, Ly, 1.0, 0.25, 0.25, /*seed=*/17);
+    const DeviceNoise dn = noise.device_noise();
+
+    // Base query points strictly inside the cell.
+    std::vector<real_t> xs, ys;
+    std::mt19937 rng(123);
+    std::uniform_real_distribution<real_t> ux(0, Lx), uy(0, Ly);
+    const int m = 60;
+    for (int k = 0; k < m; ++k) {
+        xs.push_back(ux(rng));
+        ys.push_back(uy(rng));
+    }
+    std::vector<real_t> v0, dx0, dy0;
+    sample_points(dn, xs, ys, v0, dx0, dy0);
+
+    // Same points shifted by integer numbers of periods (including negative and
+    // large offsets) must reproduce value AND both derivatives bit-for-tight.
+    const std::pair<int, int> shifts[] = {
+        {1, 0}, {0, 1}, {-1, 0}, {0, -1}, {3, -2}, {-5, 7}, {-13, -11}};
+    for (const auto &sh : shifts) {
+        std::vector<real_t> xss = xs, yss = ys;
+        for (int k = 0; k < m; ++k) {
+            xss[k] += sh.first * Lx;
+            yss[k] += sh.second * Ly;
+        }
+        std::vector<real_t> v, dvx, dvy;
+        sample_points(dn, xss, yss, v, dvx, dvy);
+        double mv = 0, mdx = 0, mdy = 0;
+        for (int k = 0; k < m; ++k) {
+            mv = std::max(mv, std::abs(v[k] - v0[k]));
+            mdx = std::max(mdx, std::abs(dvx[k] - dx0[k]));
+            mdy = std::max(mdy, std::abs(dvy[k] - dy0[k]));
+        }
+        EXPECT_LT(mv, 1e-9) << "value not periodic for shift (" << sh.first
+                            << "," << sh.second << ")";
+        EXPECT_LT(mdx, 1e-9) << "dv/dx not periodic for shift (" << sh.first
+                             << "," << sh.second << ")";
+        EXPECT_LT(mdy, 1e-9) << "dv/dy not periodic for shift (" << sh.first
+                             << "," << sh.second << ")";
+    }
+}
+
 #ifdef QEW_WITH_HDF5
 // Test 3c (golden): prefilter Python's noise_on_grid and check the interpolated
 // value/derivatives against SciPy's cubic B-spline at the same query points.

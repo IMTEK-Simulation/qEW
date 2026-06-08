@@ -97,3 +97,65 @@ TEST(Dynamics, EquipartitionMeanEnergy) {
     const double expected = 0.5 * n * kT;  // (N/2) kT
     EXPECT_NEAR(mean_e, expected, 0.1 * expected) << "mean E = " << mean_e;
 }
+
+// Test 8c: the driving force enters the drift. At zero temperature a flat line
+// in a harmonic trough at y0 plus a constant force f relaxes (elastic term
+// vanishes for a flat line) to the shifted equilibrium where the site velocity
+// -dE/dh = -(k(y-y0) - f) is zero, i.e. y = y0 + f/k. Exercises the f term in
+// the integrated gradient (the existing tests all use f = 0).
+TEST(Dynamics, DrivingForceShiftsEquilibrium) {
+    const int n = 32;
+    const real_t k = 4.0, y0 = 0.2, f = 0.6;
+    Params p;
+    p.physical_size = n;  // dx = 1
+    p.line_tension = 1.0;
+    p.driving_force = f;
+    p.model = Model::Linear;
+    HarmonicWell well{k, y0};
+
+    View1D h("h", n);
+    Kokkos::deep_copy(h, static_cast<real_t>(0));
+    LangevinDynamics dyn(n, /*seed=*/0);
+
+    const real_t drift = 0.05;
+    for (int s = 0; s < 5000; ++s)
+        dyn.step(h, p, well, drift, /*diff_coeff=*/0.0);
+
+    auto hh = Kokkos::create_mirror_view(h);
+    Kokkos::deep_copy(hh, h);
+    const real_t y_eq = y0 + f / k;
+    real_t max_dev = 0;
+    for (int i = 0; i < n; ++i) max_dev = std::max(max_dev, std::abs(hh(i) - y_eq));
+    EXPECT_LT(max_dev, 1e-6);
+}
+
+// Test 8d: with diff_coeff == 0 the RNG branch is skipped entirely, so the step
+// is purely deterministic -- two integrators seeded DIFFERENTLY must produce
+// identical trajectories. Pins that the thermal kick is gated on diff_coeff > 0
+// (a regression here would silently inject noise into the supposedly
+// zero-temperature gradient-descent path the static cross-checks rely on).
+TEST(Dynamics, ZeroDiffusionIgnoresSeed) {
+    const int n = 48;
+    Params p;
+    p.physical_size = n;
+    p.line_tension = 1.0;
+    p.driving_force = 0.3;
+    p.model = Model::Linear;
+    HarmonicWell well{4.0, 0.1};
+
+    View1D h1 = random_line(n, /*seed=*/5, -0.5, 0.5);
+    View1D h2 = random_line(n, /*seed=*/5, -0.5, 0.5);  // same start
+    LangevinDynamics d1(n, /*seed=*/111);
+    LangevinDynamics d2(n, /*seed=*/999);  // different RNG seed
+
+    for (int s = 0; s < 50; ++s) {
+        d1.step(h1, p, well, 0.05, /*diff_coeff=*/0.0);
+        d2.step(h2, p, well, 0.05, /*diff_coeff=*/0.0);
+    }
+
+    auto a = Kokkos::create_mirror_view(h1);
+    auto b = Kokkos::create_mirror_view(h2);
+    Kokkos::deep_copy(a, h1);
+    Kokkos::deep_copy(b, h2);
+    for (int i = 0; i < n; ++i) EXPECT_EQ(a(i), b(i));
+}
