@@ -1,5 +1,12 @@
 # Implementation plan for `optimization_notes.md`
 
+> **Status (June 2026):** Phases 0 and 2 are implemented and merged into this
+> branch. Measured effect of Phase 2 on the benchmark's end-to-end
+> preconditioned L-BFGS relaxation (Serial, n = 4096, arclength): 5.73 s /
+> 12893 objective evals → 4.77 s / 10424 at an identical 2470 iterations
+> (−17% wall time). Phases 1, 3, 4, 5 are open; Phase 1 still needs the
+> Python-source check described below.
+
 Companion to [`optimization_notes.md`](optimization_notes.md); item numbers
 below refer to that document. Work is grouped into five phases that are
 independently land-able, ordered so that correctness fixes go first and each

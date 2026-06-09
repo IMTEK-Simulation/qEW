@@ -1,7 +1,12 @@
 # Optimization potential & known issues
 
 Technical notes from a code review of the qEW port (June 2026). Items are
-ordered by expected impact. File references point at the current `main`-line
+ordered by expected impact.
+
+> **Status:** items 1, 3, 4 (bugs) and 5, 6, 7 (L-BFGS overhead) are fixed on
+> this branch — see `fix_plan.md` for the phase breakdown and measured
+> numbers. Items 2 (convention check), 8–12 (kernel work reduction, RK,
+> dynamics) and the minor items remain open. File references point at the current `main`-line
 sources. Nothing here changes physics; everything preserves the documented
 analytic consistency between `objective()` and `gradient()` and the golden-file
 contracts.
