@@ -146,6 +146,8 @@ LbfgsResult lbfgs_minimize(const View1D &h, const Params &p, const Noise &noise,
     gradient(h, p, noise, g);
     LbfgsResult res;
     int ls_fail_streak = 0;
+    real_t phi = 0;  // objective at the current iterate, carried across
+                     // iterations (each accepted trial evaluates it anyway)
 
     for (int it = 0; it < lp.max_iter; ++it) {
         const real_t gmax = lbfgs_max_abs(n, g);
@@ -197,8 +199,11 @@ LbfgsResult lbfgs_minimize(const View1D &h, const Params &p, const Noise &noise,
 
         // ---- Armijo backtracking line search ----
         Kokkos::deep_copy(x0, h);
-        const real_t phi0 = objective(h, p, noise);  // h == x0 here
-        ++res.n_func_evals;
+        if (it == 0) {  // later iterations reuse the accepted trial value
+            phi = objective(h, p, noise);
+            ++res.n_func_evals;
+        }
+        const real_t phi0 = phi;  // objective at x0
         // alpha0 = 1 for L-BFGS / preconditioned steps (well-scaled direction);
         // for an unpreconditioned first steepest-descent step, scale by 1/|g|.
         real_t alpha = static_cast<real_t>(1);
@@ -212,9 +217,10 @@ LbfgsResult lbfgs_minimize(const View1D &h, const Params &p, const Noise &noise,
             Kokkos::parallel_for(
                 "lbfgs_trial", n,
                 KOKKOS_LAMBDA(const int i) { h(i) = x0(i) + al * d(i); });
-            const real_t phi = objective(h, p, noise);
+            const real_t phi_trial = objective(h, p, noise);
             ++res.n_func_evals;
-            if (phi <= phi0 + lp.c1 * alpha * dphi0) {
+            if (phi_trial <= phi0 + lp.c1 * alpha * dphi0) {
+                phi = phi_trial;
                 ok = true;
                 break;
             }
