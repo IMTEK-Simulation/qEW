@@ -44,6 +44,7 @@ FireResult fire_minimize(const View1D &h, const Params &p, const Noise &noise,
     const int n = static_cast<int>(h.extent(0));
     View1D grad("fire_grad", n);
     View1D v("fire_v", n);
+    GradientWorkspace gws;
     Kokkos::deep_copy(v, static_cast<real_t>(0));
 
     real_t dt = (fp.dt_init > 0) ? fp.dt_init : static_cast<real_t>(0.1) * fp.dt_max;
@@ -62,7 +63,7 @@ FireResult fire_minimize(const View1D &h, const Params &p, const Noise &noise,
         return m;
     };
 
-    gradient(h, p, noise, grad);
+    gradient(h, p, noise, grad, gws);
 
     FireResult res;
     for (int it = 0; it < fp.max_iter; ++it) {
@@ -120,7 +121,7 @@ FireResult fire_minimize(const View1D &h, const Params &p, const Noise &noise,
         Kokkos::parallel_for(
             "fire_xstep", n,
             KOKKOS_LAMBDA(const int i) { h(i) += dt * v(i); });
-        gradient(h, p, noise, grad);
+        gradient(h, p, noise, grad, gws);
     }
 
     res.iterations = fp.max_iter;

@@ -34,27 +34,38 @@ public:
     template <class Noise>
     void step(const View1D &h, const Params &p, const Noise &noise,
               real_t drift_coeff, real_t diff_coeff) {
-        gradient(h, p, noise, grad_);
+        gradient(h, p, noise, grad_, ws_);
         const View1D grad = grad_;
         Pool pool = pool_;
         const real_t a = drift_coeff;
         const real_t b = diff_coeff;
-        const bool thermal = (b > 0);
-        Kokkos::parallel_for(
-            "langevin_step", static_cast<int>(h.extent(0)),
-            KOKKOS_LAMBDA(const int i) {
-                real_t xi = 0;
-                if (thermal) {
+        const int n = static_cast<int>(h.extent(0));
+        if (b > 0) {
+            // One RNG state per lane, each covering a contiguous block: a
+            // pool acquire per chunk instead of per site (the per-site
+            // acquire is lock traffic that serialises on wide GPUs).
+            const int n_lanes = (n < 8192) ? n : 8192;
+            const int chunk = (n + n_lanes - 1) / n_lanes;
+            Kokkos::parallel_for(
+                "langevin_step", n_lanes, KOKKOS_LAMBDA(const int t) {
                     auto gen = pool.get_state();
-                    xi = static_cast<real_t>(gen.normal());
+                    const int lo = t * chunk;
+                    const int hi = (lo + chunk < n) ? lo + chunk : n;
+                    for (int i = lo; i < hi; ++i)
+                        h(i) += -a * grad(i) +
+                                b * static_cast<real_t>(gen.normal());
                     pool.free_state(gen);
-                }
-                h(i) += -a * grad(i) + b * xi;
-            });
+                });
+        } else {  // zero temperature: pure gradient descent, no RNG at all
+            Kokkos::parallel_for(
+                "langevin_step", n,
+                KOKKOS_LAMBDA(const int i) { h(i) += -a * grad(i); });
+        }
     }
 
 private:
     View1D grad_;
+    GradientWorkspace ws_;
     Pool pool_;
 };
 

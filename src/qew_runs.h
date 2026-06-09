@@ -22,7 +22,16 @@
 // the kernels it drives, so tests can pass a cheap analytic potential instead of
 // paying for a FilteredNoise FFT setup. The loop bodies are a faithful copy of
 // the original mains -- behaviour (timestep heuristic, anneal schedule, force
-// ramp + f_c bracketing, pinning-length -> line-tension map) is unchanged.
+// ramp + f_c bracketing) is unchanged.
+//
+// Pinning-length convention (Le et al., arXiv:2410.21838, eq. (10)): the Larkin
+// length obeys lambda_p / xi = (Gamma / U0)^{2/3}, varied by holding the
+// disorder (amplitude U0, correlation length xi) fixed and scanning the line
+// tension Gamma. All drivers therefore take the DIMENSIONLESS ratio
+// lambda_p/xi and invert it as
+//     Gamma = amplitude * (lambda_p/xi)^{3/2}.
+// The ratio is also what the HDF5 "pinning_length" keys/values carry, matching
+// the paper's labelling (lambda_p/xi = 0.1 floppy ... 100 stiff).
 namespace qew {
 
 inline std::vector<double> to_host_vec(const View1D &h) {
@@ -39,19 +48,20 @@ inline std::vector<double> to_host_vec(const View1D &h) {
 struct StaticConfig {
     Model model = Model::Arclength;
     real_t amplitude = 1.0;
-    real_t xi = 0.1;            // correlation length
+    real_t xi = 0.1;            // correlation length; MUST match the noise's xi
     real_t Lx = 32.0;
     real_t Ly = 1.0;
     int nx = 4096;
     int ny = 512;               // noise y-resolution (used only at noise setup)
     real_t driving_force = 0.0;
-    std::vector<double> pinning_lengths = {0.01, 0.1, 1.0, 10.0, 100.0};
+    // lambda_p/xi ratios to sweep, floppy (<1) to stiff (>1).
+    std::vector<double> pinning_lengths_over_xi = {0.01, 0.1, 1.0, 10.0, 100.0};
     real_t ftol = 1e-6;
     int max_iter = 5000;
 };
 
 struct StaticProfile {
-    double pinning_length = 0;
+    double pinning_length_over_xi = 0;
     real_t line_tension = 0;
     std::vector<double> h;
     LbfgsResult result;
@@ -60,8 +70,8 @@ struct StaticProfile {
 template <class Noise>
 std::vector<StaticProfile> static_sweep(const StaticConfig &c, const Noise &noise) {
     std::vector<StaticProfile> out;
-    out.reserve(c.pinning_lengths.size());
-    for (double lp : c.pinning_lengths) {
+    out.reserve(c.pinning_lengths_over_xi.size());
+    for (double lp : c.pinning_lengths_over_xi) {
         Params p;
         p.physical_size = c.Lx;
         p.line_tension = std::pow(lp, static_cast<real_t>(1.5)) * c.amplitude;
@@ -82,7 +92,7 @@ std::vector<StaticProfile> static_sweep(const StaticConfig &c, const Noise &nois
         const LbfgsResult r = lbfgs_minimize(h, p, noise, opt);
 
         StaticProfile prof;
-        prof.pinning_length = lp;
+        prof.pinning_length_over_xi = lp;
         prof.line_tension = p.line_tension;
         prof.h = to_host_vec(h);
         prof.result = r;
@@ -97,8 +107,8 @@ std::vector<StaticProfile> static_sweep(const StaticConfig &c, const Noise &nois
 struct DynamicConfig {
     Model model = Model::Arclength;
     real_t amplitude = 1.0;
-    real_t xi = 0.1;
-    real_t pinning_length = 0.01;
+    real_t xi = 0.1;            // correlation length; MUST match the noise's xi
+    real_t pinning_length_over_xi = 0.1;  // lambda_p/xi (floppy)
     real_t driving_force = 0.0;
     real_t Lx = 2.0;
     real_t Ly = 1.0;
@@ -131,7 +141,7 @@ DynamicResult dynamic_anneal(const DynamicConfig &c, const Noise &noise) {
     const real_t dt = std::min(static_cast<real_t>(0.1),
                                tau / 10 * std::min(fac, fac * fac));
     const real_t line_tension =
-        std::pow(c.pinning_length / c.xi, static_cast<real_t>(1.5)) * c.amplitude;
+        std::pow(c.pinning_length_over_xi, static_cast<real_t>(1.5)) * c.amplitude;
 
     Params p;
     p.physical_size = c.Lx;
@@ -172,8 +182,8 @@ DynamicResult dynamic_anneal(const DynamicConfig &c, const Noise &noise) {
 struct DepinningConfig {
     Model model = Model::Arclength;
     real_t amplitude = 1.0;
-    real_t xi = 0.1;
-    real_t pinning_length = 5.0;
+    real_t xi = 0.1;            // correlation length; MUST match the noise's xi
+    real_t pinning_length_over_xi = 5.0;  // lambda_p/xi (stiff)
     real_t Lx = 8.0;
     real_t Ly = 1.0;
     int nx = 1024;
@@ -198,7 +208,7 @@ struct DepinningResult {
 template <class Noise>
 DepinningResult depinning_ramp(const DepinningConfig &c, const Noise &noise) {
     const real_t line_tension =
-        std::pow(c.pinning_length, static_cast<real_t>(1.5)) * c.amplitude;
+        std::pow(c.pinning_length_over_xi, static_cast<real_t>(1.5)) * c.amplitude;
 
     Params p;
     p.physical_size = c.Lx;
@@ -211,7 +221,10 @@ DepinningResult depinning_ramp(const DepinningConfig &c, const Noise &noise) {
     DepinningResult res;
     res.line_tension = line_tension;
 
-    for (real_t f = 0; f <= c.f_max; f += c.f_step) {
+    // Integer counter: accumulating f += f_step drifts for non-representable
+    // steps and can drop the final force (and perturb the HDF5 key strings).
+    for (int k = 0; static_cast<real_t>(k) * c.f_step <= c.f_max; ++k) {
+        const real_t f = static_cast<real_t>(k) * c.f_step;
         p.driving_force = f;
         const RkResult r = rk_block(h, p, noise, c.rp);  // restart from previous
 

@@ -30,7 +30,9 @@ int main(int argc, char *argv[]) {
         const char *model_name = "arclength";
         cfg.amplitude = 1.0;
         cfg.xi = 0.1;  // correlation length
-        cfg.pinning_length = 0.01;
+        // lambda_p/xi = 0.1 (floppy); previously stored as the physical length
+        // 0.01 and divided by xi -- the line tension is unchanged.
+        cfg.pinning_length_over_xi = 0.1;
         cfg.driving_force = 0.0;
         cfg.Lx = 2.0;
         cfg.Ly = 1.0;

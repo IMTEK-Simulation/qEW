@@ -1,6 +1,8 @@
 #ifndef QEW_ROSSO_KRAUTH_H
 #define QEW_ROSSO_KRAUTH_H
 
+#include <stdexcept>
+
 #include <Kokkos_Core.hpp>
 
 #include "qew_model.h"
@@ -52,8 +54,8 @@ KOKKOS_INLINE_FUNCTION real_t rk_site_velocity(int i, int n, real_t dx, real_t l
                                                real_t f, Model model, real_t hi,
                                                real_t hl, real_t hr,
                                                const Noise &noise) {
-    const int im = (i - 1 + n) % n;
-    const int ip = (i + 1) % n;
+    const int im = (i == 0) ? n - 1 : i - 1;
+    const int ip = (i + 1 == n) ? 0 : i + 1;
 
     real_t line_force;
     if (model == Model::Linear) {
@@ -71,8 +73,8 @@ KOKKOS_INLINE_FUNCTION real_t rk_site_velocity(int i, int n, real_t dx, real_t l
     const real_t hcl = (hl + hi) * static_cast<real_t>(0.5);
     const real_t xcr = static_cast<real_t>(i + ip) * static_cast<real_t>(0.5) * dx;
     const real_t hcr = (hi + hr) * static_cast<real_t>(0.5);
-    const real_t dvl = noise.sample(xcl, hcl).dv_dy;
-    const real_t dvr = noise.sample(xcr, hcr).dv_dy;
+    const real_t dvl = detail::noise_dvdy(noise, xcl, hcl);
+    const real_t dvr = detail::noise_dvdy(noise, xcr, hcr);
 
     const real_t grad =
         dx * (line_force + static_cast<real_t>(0.5) * (dvl + dvr) - f);
@@ -127,6 +129,11 @@ template <class Noise>
 RkResult rk_block(const View1D &h, const Params &p, const Noise &noise,
                   const RkParams &rp) {
     const int n = static_cast<int>(h.extent(0));
+    // On a periodic ring with odd n, sites 0 and n-1 share parity but are
+    // nearest neighbours, so one colour pass would update both concurrently.
+    if (n % 2 != 0)
+        throw std::invalid_argument(
+            "rk_block: line length must be even for the red-black sweep");
     const real_t dx = p.physical_size / static_cast<real_t>(n);
     const real_t lt = p.line_tension;
     const real_t f = p.driving_force;
@@ -141,13 +148,14 @@ RkResult rk_block(const View1D &h, const Params &p, const Noise &noise,
     mean_h0 /= static_cast<real_t>(n);
 
     RkResult res;
+    real_t cum_adv = 0;  // forward-only moves: mean_h = mean_h0 + cum_adv / n
     for (int sweep = 0; sweep < rp.max_sweeps; ++sweep) {
         for (int color = 0; color < 2; ++color) {
             Kokkos::parallel_for(
                 "rk_sweep", n, KOKKOS_LAMBDA(const int i) {
                     if ((i & 1) != color) return;
-                    const int im = (i - 1 + n) % n;
-                    const int ip = (i + 1) % n;
+                    const int im = (i == 0) ? n - 1 : i - 1;
+                    const int ip = (i + 1 == n) ? 0 : i + 1;
                     bool found = false;
                     const real_t hnew =
                         rk_forward_zero(i, n, dx, lt, f, model, h(i), h(im),
@@ -161,17 +169,14 @@ RkResult rk_block(const View1D &h, const Params &p, const Noise &noise,
         Kokkos::parallel_reduce(
             "rk_adv_sum", n,
             KOKKOS_LAMBDA(const int i, real_t &acc) { acc += adv(i); }, total_adv);
-        real_t mean_h = 0;
-        Kokkos::parallel_reduce(
-            "rk_mean", n,
-            KOKKOS_LAMBDA(const int i, real_t &acc) { acc += h(i); }, mean_h);
-        mean_h /= static_cast<real_t>(n);
+        cum_adv += total_adv;
+        const real_t mean_adv = cum_adv / static_cast<real_t>(n);
 
         res.sweeps = sweep + 1;
         res.total_advance = total_adv;
-        res.mean_h = mean_h;
+        res.mean_h = mean_h0 + mean_adv;
 
-        if (mean_h - mean_h0 > rp.runaway) {  // depinned: advanced too far
+        if (mean_adv > rp.runaway) {  // depinned: advanced too far
             res.runaway = true;
             res.blocked = false;
             return res;

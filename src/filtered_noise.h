@@ -29,10 +29,9 @@
 namespace qew {
 
 // Cubic B-spline interpolation weights w[0..3] for the four neighbours
-// {i-1, i, i+1, i+2} at fractional position t in [0,1), and their derivatives
-// dw[0..3] with respect to t (i.e. d/d(grid coordinate)).
+// {i-1, i, i+1, i+2} at fractional position t in [0,1).
 KOKKOS_INLINE_FUNCTION
-void bspline_weights(real_t t, real_t w[4], real_t dw[4]) {
+void bspline_weights_value(real_t t, real_t w[4]) {
     const real_t t2 = t * t;
     const real_t t3 = t2 * t;
     const real_t omt = static_cast<real_t>(1) - t;
@@ -44,7 +43,16 @@ void bspline_weights(real_t t, real_t w[4], real_t dw[4]) {
             static_cast<real_t>(3) * t2 - static_cast<real_t>(3) * t3) /
            static_cast<real_t>(6);
     w[3] = t3 / static_cast<real_t>(6);
+}
 
+// As above, plus the weight derivatives dw[0..3] with respect to t (i.e.
+// d/d(grid coordinate)).
+KOKKOS_INLINE_FUNCTION
+void bspline_weights(real_t t, real_t w[4], real_t dw[4]) {
+    bspline_weights_value(t, w);
+
+    const real_t t2 = t * t;
+    const real_t omt = static_cast<real_t>(1) - t;
     dw[0] = -omt * omt / static_cast<real_t>(2);
     dw[1] = (-static_cast<real_t>(12) * t + static_cast<real_t>(9) * t2) /
             static_cast<real_t>(6);
@@ -63,21 +71,40 @@ struct DeviceNoise {
     real_t dx = 1;          // physical grid spacing in x
     real_t dy = 1;          // physical grid spacing in y
 
+    // Physical -> grid coordinates: wrap into [0, n), split into the base cell
+    // index and fraction, and build the four periodic neighbour indices with
+    // conditional wraps (integer % is expensive in these hot device loops).
     KOKKOS_INLINE_FUNCTION
-    NoiseSample sample(real_t x, real_t y) const {
-        // Physical -> grid coordinates, wrapped into [0, n) (positive modulo).
+    void locate(real_t x, real_t y, int ixn[4], int iyn[4], real_t &fx,
+                real_t &fy) const {
         real_t gx = x / dx;
         real_t gy = y / dy;
         gx -= Kokkos::floor(gx / static_cast<real_t>(nx)) * static_cast<real_t>(nx);
         gy -= Kokkos::floor(gy / static_cast<real_t>(ny)) * static_cast<real_t>(ny);
 
-        const int ix = static_cast<int>(Kokkos::floor(gx));
-        const int iy = static_cast<int>(Kokkos::floor(gy));
-        const real_t fx = gx - static_cast<real_t>(ix);
-        const real_t fy = gy - static_cast<real_t>(iy);
+        int ix = static_cast<int>(Kokkos::floor(gx));
+        int iy = static_cast<int>(Kokkos::floor(gy));
+        // The wrap can round to exactly n; fold it back before the fraction.
+        if (ix >= nx) { ix -= nx; gx -= static_cast<real_t>(nx); }
+        if (iy >= ny) { iy -= ny; gy -= static_cast<real_t>(ny); }
+        fx = gx - static_cast<real_t>(ix);
+        fy = gy - static_cast<real_t>(iy);
 
-        const int ixn[4] = {(ix - 1 + nx) % nx, ix % nx, (ix + 1) % nx, (ix + 2) % nx};
-        const int iyn[4] = {(iy - 1 + ny) % ny, iy % ny, (iy + 1) % ny, (iy + 2) % ny};
+        ixn[0] = (ix == 0) ? nx - 1 : ix - 1;
+        ixn[1] = ix;
+        ixn[2] = (ix + 1 == nx) ? 0 : ix + 1;
+        ixn[3] = (ixn[2] + 1 == nx) ? 0 : ixn[2] + 1;
+        iyn[0] = (iy == 0) ? ny - 1 : iy - 1;
+        iyn[1] = iy;
+        iyn[2] = (iy + 1 == ny) ? 0 : iy + 1;
+        iyn[3] = (iyn[2] + 1 == ny) ? 0 : iyn[2] + 1;
+    }
+
+    KOKKOS_INLINE_FUNCTION
+    NoiseSample sample(real_t x, real_t y) const {
+        int ixn[4], iyn[4];
+        real_t fx, fy;
+        locate(x, y, ixn, iyn, fx, fy);
 
         real_t wx[4], dwx[4], wy[4], dwy[4];
         bspline_weights(fx, wx, dwx);
@@ -104,6 +131,48 @@ struct DeviceNoise {
         s.dv_dx = dv_dgx / dx;  // grid -> physical derivative
         s.dv_dy = dv_dgy / dy;
         return s;
+    }
+
+    // Value only -- the objective() hot path (line-search trials) does not
+    // need the derivatives, so skip the dw weights and both accumulators.
+    KOKKOS_INLINE_FUNCTION
+    real_t sample_value(real_t x, real_t y) const {
+        int ixn[4], iyn[4];
+        real_t fx, fy;
+        locate(x, y, ixn, iyn, fx, fy);
+
+        real_t wx[4], wy[4];
+        bspline_weights_value(fx, wx);
+        bspline_weights_value(fy, wy);
+
+        real_t v = 0;
+        for (int a = 0; a < 4; ++a) {
+            real_t row = 0;
+            for (int b = 0; b < 4; ++b) row += coef(ixn[a], iyn[b]) * wy[b];
+            v += wx[a] * row;
+        }
+        return v;
+    }
+
+    // dV/dy only -- gradient() and the Rosso-Krauth site velocity use just the
+    // y-derivative at edge midpoints; dV/dx is never consumed anywhere.
+    KOKKOS_INLINE_FUNCTION
+    real_t sample_dy(real_t x, real_t y) const {
+        int ixn[4], iyn[4];
+        real_t fx, fy;
+        locate(x, y, ixn, iyn, fx, fy);
+
+        real_t wx[4], wy[4], dwy[4];
+        bspline_weights_value(fx, wx);
+        bspline_weights(fy, wy, dwy);
+
+        real_t dv_dgy = 0;
+        for (int a = 0; a < 4; ++a) {
+            real_t row_dy = 0;
+            for (int b = 0; b < 4; ++b) row_dy += coef(ixn[a], iyn[b]) * dwy[b];
+            dv_dgy += wx[a] * row_dy;
+        }
+        return dv_dgy / dy;
     }
 };
 

@@ -36,7 +36,8 @@ int main(int argc, char *argv[]) {
         cfg.nx = 4096;
         cfg.ny = 512;
         cfg.driving_force = 0.0;
-        cfg.pinning_lengths = {0.01, 0.1, 1.0, 10.0, 100.0};
+        // lambda_p/xi: floppy (0.01) through stiff (100), cf. the paper's sweep.
+        cfg.pinning_lengths_over_xi = {0.01, 0.1, 1.0, 10.0, 100.0};
         cfg.ftol = 1e-6;  // ample for roughness analysis
         cfg.max_iter = 5000;
         const std::uint64_t seed = 1;
@@ -47,8 +48,9 @@ int main(int argc, char *argv[]) {
             static_sweep(cfg, noise.device_noise());
 
         for (const StaticProfile &prof : profiles) {
-            std::printf("lp=%-6.3g lt=%-10.4g iters=%-7d max|F|=%.3e  %s\n",
-                        prof.pinning_length, static_cast<double>(prof.line_tension),
+            std::printf("lp/xi=%-6.3g lt=%-10.4g iters=%-7d max|F|=%.3e  %s\n",
+                        prof.pinning_length_over_xi,
+                        static_cast<double>(prof.line_tension),
                         prof.result.iterations,
                         static_cast<double>(prof.result.max_force),
                         prof.result.converged ? "converged" : "NOT converged");

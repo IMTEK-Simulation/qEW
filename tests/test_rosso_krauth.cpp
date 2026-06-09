@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <random>
+#include <stdexcept>
 #include <vector>
 
 #include <Kokkos_Core.hpp>
@@ -287,4 +288,26 @@ TEST(RossoKrauth, BlocksArclengthModel) {
         },
         Kokkos::Max<real_t>(max_v));
     EXPECT_LT(max_v, 1e-6);
+}
+
+// An odd line length must be rejected up front: with periodic boundaries sites
+// 0 and n-1 share red-black parity but are nearest neighbours, so one colour
+// pass would update both concurrently (a data race, not just wrong physics).
+TEST(RossoKrauth, RejectsOddLineLength) {
+    const int n = 17;
+    const SinusoidNoise noise;
+
+    Params p;
+    p.physical_size = n;
+    p.line_tension = 1.0;
+    p.driving_force = 0.0;
+    p.model = Model::Linear;
+
+    RkParams rp;
+    rp.dstep = 0.01;
+    rp.max_advance = 1.0;
+    rp.runaway = 3.0;
+
+    View1D h = flat_line(n, 0.0);
+    EXPECT_THROW(rk_block(h, p, noise, rp), std::invalid_argument);
 }

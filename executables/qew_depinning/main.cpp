@@ -31,8 +31,8 @@ int main(int argc, char *argv[]) {
         cfg.model = Model::Arclength;
         const char *model_name = "arclength";
         cfg.amplitude = 1.0;
-        cfg.xi = 0.1;             // correlation length
-        cfg.pinning_length = 5.0;  // lambda_p/xi (stiff)
+        cfg.xi = 0.1;                      // correlation length
+        cfg.pinning_length_over_xi = 5.0;  // lambda_p/xi (stiff)
         cfg.Lx = 8.0;
         cfg.Ly = 1.0;
         cfg.nx = 1024;
@@ -52,7 +52,7 @@ int main(int argc, char *argv[]) {
         const DepinningResult res = depinning_ramp(cfg, noise.device_noise());
 
         std::printf("model=%s  lambda_p/xi=%.3g  line_tension=%.4g\n", model_name,
-                    static_cast<double>(cfg.pinning_length),
+                    static_cast<double>(cfg.pinning_length_over_xi),
                     static_cast<double>(res.line_tension));
         for (const DepinningStep &st : res.steps) {
             std::printf("f=%7.3f  sweeps=%-7d mean_h=%8.4f  %s\n",

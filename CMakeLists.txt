@@ -2,7 +2,14 @@ cmake_minimum_required(VERSION 3.14)
 if(POLICY CMP0135)
     cmake_policy(SET CMP0135 NEW)
 endif()
-project(my-fantastic-simulation-code LANGUAGES C CXX VERSION 0.1)
+project(qew LANGUAGES C CXX VERSION 0.1)
+
+# Bandwidth-bound HPC code: an accidental no-flags build (-O0) is never what
+# anyone wants, so default to Release when the user does not choose.
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+    set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
+    message(STATUS "CMAKE_BUILD_TYPE not set, defaulting to Release")
+endif()
 
 # Kokkos 5.x requires C++20 or newer.
 set(CMAKE_CXX_STANDARD 20)
