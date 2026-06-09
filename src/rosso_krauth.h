@@ -1,6 +1,8 @@
 #ifndef QEW_ROSSO_KRAUTH_H
 #define QEW_ROSSO_KRAUTH_H
 
+#include <stdexcept>
+
 #include <Kokkos_Core.hpp>
 
 #include "qew_model.h"
@@ -127,6 +129,11 @@ template <class Noise>
 RkResult rk_block(const View1D &h, const Params &p, const Noise &noise,
                   const RkParams &rp) {
     const int n = static_cast<int>(h.extent(0));
+    // On a periodic ring with odd n, sites 0 and n-1 share parity but are
+    // nearest neighbours, so one colour pass would update both concurrently.
+    if (n % 2 != 0)
+        throw std::invalid_argument(
+            "rk_block: line length must be even for the red-black sweep");
     const real_t dx = p.physical_size / static_cast<real_t>(n);
     const real_t lt = p.line_tension;
     const real_t f = p.driving_force;

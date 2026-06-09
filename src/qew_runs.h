@@ -211,7 +211,10 @@ DepinningResult depinning_ramp(const DepinningConfig &c, const Noise &noise) {
     DepinningResult res;
     res.line_tension = line_tension;
 
-    for (real_t f = 0; f <= c.f_max; f += c.f_step) {
+    // Integer counter: accumulating f += f_step drifts for non-representable
+    // steps and can drop the final force (and perturb the HDF5 key strings).
+    for (int k = 0; static_cast<real_t>(k) * c.f_step <= c.f_max; ++k) {
+        const real_t f = static_cast<real_t>(k) * c.f_step;
         p.driving_force = f;
         const RkResult r = rk_block(h, p, noise, c.rp);  // restart from previous
 
