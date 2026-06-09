@@ -28,6 +28,25 @@ struct Params {
 
 namespace detail {
 
+// Noise access points: prefer the cheap single-quantity samplers when the
+// functor provides them (DeviceNoise does); analytic test noises only supply
+// the full sample() and fall back to it. Keeps one call site per kernel.
+template <class Noise>
+KOKKOS_INLINE_FUNCTION real_t noise_value(const Noise &noise, real_t x, real_t y) {
+    if constexpr (requires { noise.sample_value(x, y); })
+        return noise.sample_value(x, y);
+    else
+        return noise.sample(x, y).v;
+}
+
+template <class Noise>
+KOKKOS_INLINE_FUNCTION real_t noise_dvdy(const Noise &noise, real_t x, real_t y) {
+    if constexpr (requires { noise.sample_dy(x, y); })
+        return noise.sample_dy(x, y);
+    else
+        return noise.sample(x, y).dv_dy;
+}
+
 // Shared objective body: the line position enters only through the
 // device-callable functor `at(i)`, so the plain evaluation and the
 // line-search trial evaluation share one analytic definition.
@@ -42,7 +61,7 @@ real_t objective_eval(int n, const Params &p, const Noise &noise, const At &at) 
     Kokkos::parallel_reduce(
         "qew::objective", n,
         KOKKOS_LAMBDA(const int i, real_t &acc) {
-            const int ip = (i + 1) % n;  // periodic forward neighbour
+            const int ip = (i + 1 == n) ? 0 : i + 1;  // periodic forward neighbour
             const real_t hi = at(i);
             const real_t hip = at(ip);
             const real_t dh_dx = (hip - hi) / dx;
@@ -59,9 +78,7 @@ real_t objective_eval(int n, const Params &p, const Noise &noise, const At &at) 
             // Edge midpoint, matching python xcenter/hcenter (periodic wrap).
             const real_t xc = static_cast<real_t>(i + ip) * static_cast<real_t>(0.5) * dx;
             const real_t hc = (hip + hi) * static_cast<real_t>(0.5);
-            const NoiseSample s = noise.sample(xc, hc);
-
-            acc += dx * (line_energy + s.v - f * hi);
+            acc += dx * (line_energy + noise_value(noise, xc, hc) - f * hi);
         },
         total);
     return total;
@@ -116,8 +133,8 @@ void gradient(const View1D &h, const Params &p, const Noise &noise,
 
     Kokkos::parallel_for(
         "qew::gradient", n, KOKKOS_LAMBDA(const int i) {
-            const int ip = (i + 1) % n;          // right neighbour
-            const int im = (i - 1 + n) % n;      // left neighbour
+            const int ip = (i + 1 == n) ? 0 : i + 1;  // right neighbour
+            const int im = (i == 0) ? n - 1 : i - 1;  // left neighbour
 
             real_t line_force;
             if (model == Model::Linear) {
@@ -139,11 +156,11 @@ void gradient(const View1D &h, const Params &p, const Noise &noise,
             const real_t hcl = (h(im) + h(i)) * static_cast<real_t>(0.5);
             const real_t xcr = static_cast<real_t>(i + ip) * static_cast<real_t>(0.5) * dx;
             const real_t hcr = (h(ip) + h(i)) * static_cast<real_t>(0.5);
-            const NoiseSample sl = noise.sample(xcl, hcl);
-            const NoiseSample sr = noise.sample(xcr, hcr);
+            const real_t dvl = detail::noise_dvdy(noise, xcl, hcl);
+            const real_t dvr = detail::noise_dvdy(noise, xcr, hcr);
 
             grad(i) = dx * (line_force +
-                            static_cast<real_t>(0.5) * (sl.dv_dy + sr.dv_dy) - f);
+                            static_cast<real_t>(0.5) * (dvl + dvr) - f);
         });
 }
 

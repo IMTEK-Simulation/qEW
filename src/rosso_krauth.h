@@ -54,8 +54,8 @@ KOKKOS_INLINE_FUNCTION real_t rk_site_velocity(int i, int n, real_t dx, real_t l
                                                real_t f, Model model, real_t hi,
                                                real_t hl, real_t hr,
                                                const Noise &noise) {
-    const int im = (i - 1 + n) % n;
-    const int ip = (i + 1) % n;
+    const int im = (i == 0) ? n - 1 : i - 1;
+    const int ip = (i + 1 == n) ? 0 : i + 1;
 
     real_t line_force;
     if (model == Model::Linear) {
@@ -73,8 +73,8 @@ KOKKOS_INLINE_FUNCTION real_t rk_site_velocity(int i, int n, real_t dx, real_t l
     const real_t hcl = (hl + hi) * static_cast<real_t>(0.5);
     const real_t xcr = static_cast<real_t>(i + ip) * static_cast<real_t>(0.5) * dx;
     const real_t hcr = (hi + hr) * static_cast<real_t>(0.5);
-    const real_t dvl = noise.sample(xcl, hcl).dv_dy;
-    const real_t dvr = noise.sample(xcr, hcr).dv_dy;
+    const real_t dvl = detail::noise_dvdy(noise, xcl, hcl);
+    const real_t dvr = detail::noise_dvdy(noise, xcr, hcr);
 
     const real_t grad =
         dx * (line_force + static_cast<real_t>(0.5) * (dvl + dvr) - f);
@@ -153,8 +153,8 @@ RkResult rk_block(const View1D &h, const Params &p, const Noise &noise,
             Kokkos::parallel_for(
                 "rk_sweep", n, KOKKOS_LAMBDA(const int i) {
                     if ((i & 1) != color) return;
-                    const int im = (i - 1 + n) % n;
-                    const int ip = (i + 1) % n;
+                    const int im = (i == 0) ? n - 1 : i - 1;
+                    const int ip = (i + 1 == n) ? 0 : i + 1;
                     bool found = false;
                     const real_t hnew =
                         rk_forward_zero(i, n, dx, lt, f, model, h(i), h(im),
