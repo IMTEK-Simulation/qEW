@@ -34,7 +34,7 @@ public:
     template <class Noise>
     void step(const View1D &h, const Params &p, const Noise &noise,
               real_t drift_coeff, real_t diff_coeff) {
-        gradient(h, p, noise, grad_);
+        gradient(h, p, noise, grad_, ws_);
         const View1D grad = grad_;
         Pool pool = pool_;
         const real_t a = drift_coeff;
@@ -55,6 +55,7 @@ public:
 
 private:
     View1D grad_;
+    GradientWorkspace ws_;
     Pool pool_;
 };
 

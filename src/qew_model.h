@@ -118,18 +118,61 @@ real_t objective(const View1D &x0, const View1D &d, real_t alpha,
                                   detail::TrialAt{x0, d, alpha});
 }
 
+// Scratch for the two-pass gradient: per-edge quantities computed once and
+// shared by the two adjacent sites (the dominant bicubic gather would
+// otherwise run twice per edge). Own one of these in loops that call
+// gradient() repeatedly so the allocations are reused; the workspace-free
+// overload below allocates on the fly.
+struct GradientWorkspace {
+    View1D edge_dvdy;   // dV/dy at the midpoint of edge (i, i+1)
+    View1D edge_slope;  // arclength only: dh/sqrt(1+dh^2) on edge (i, i+1)
+
+    void ensure(int n, Model model) {
+        if (static_cast<int>(edge_dvdy.extent(0)) != n)
+            edge_dvdy = View1D("qew_edge_dvdy", n);
+        if (model == Model::Arclength &&
+            static_cast<int>(edge_slope.extent(0)) != n)
+            edge_slope = View1D("qew_edge_slope", n);
+    }
+};
+
 // Force grad_i = dE/dh_i. Elastic term: harmonic Laplacian (linear) or
 // slope-normalized difference (arclength); noise term: half the sum of dV/dy at
-// the left edge (i-1, i) and right edge (i, i+1). Exact port of qew_gradient,
-// run as a parallel_for. `grad` must be pre-allocated with the same extent as h.
+// the left edge (i-1, i) and right edge (i, i+1). Exact port of qew_gradient.
+// `grad` must be pre-allocated with the same extent as h.
+//
+// Two passes: edge kernel (one noise gather + one slope per edge), then a
+// cheap per-site combine. Site i's left edge is edge i-1, its right edge is
+// edge i; the edge midpoints match python xcenter/hcenter (periodic wrap), so
+// the result is identical to the former one-pass version that sampled every
+// edge twice.
 template <class Noise>
 void gradient(const View1D &h, const Params &p, const Noise &noise,
-              const View1D &grad) {
+              const View1D &grad, GradientWorkspace &ws) {
     const int n = static_cast<int>(h.extent(0));
     const real_t dx = p.physical_size / static_cast<real_t>(n);
     const real_t lt = p.line_tension;
     const real_t f = p.driving_force;
     const Model model = p.model;
+
+    ws.ensure(n, model);
+    const View1D edvdy = ws.edge_dvdy;
+    const View1D eslope = ws.edge_slope;
+    const bool arc = (model == Model::Arclength);
+
+    Kokkos::parallel_for(
+        "qew::gradient_edges", n, KOKKOS_LAMBDA(const int i) {
+            const int ip = (i + 1 == n) ? 0 : i + 1;
+            const real_t xc =
+                static_cast<real_t>(i + ip) * static_cast<real_t>(0.5) * dx;
+            const real_t hc = (h(ip) + h(i)) * static_cast<real_t>(0.5);
+            edvdy(i) = detail::noise_dvdy(noise, xc, hc);
+            if (arc) {
+                const real_t dh = (h(ip) - h(i)) / dx;
+                eslope(i) =
+                    dh / Kokkos::sqrt(static_cast<real_t>(1) + dh * dh);
+            }
+        });
 
     Kokkos::parallel_for(
         "qew::gradient", n, KOKKOS_LAMBDA(const int i) {
@@ -141,27 +184,20 @@ void gradient(const View1D &h, const Params &p, const Noise &noise,
                 const real_t d2h = h(im) + h(ip) - static_cast<real_t>(2) * h(i);
                 line_force = -lt * d2h / (dx * dx);
             } else {
-                const real_t dhr = (h(ip) - h(i)) / dx;  // right slope
-                const real_t dhl = (h(i) - h(im)) / dx;  // left slope
-                line_force =
-                    lt *
-                    (dhl / Kokkos::sqrt(static_cast<real_t>(1) + dhl * dhl) -
-                     dhr / Kokkos::sqrt(static_cast<real_t>(1) + dhr * dhr)) /
-                    dx;
+                line_force = lt * (eslope(im) - eslope(i)) / dx;
             }
 
-            // dV/dy at the left and right edge midpoints (periodic wrap matches
-            // python xcenter_left/right and hcenter_left/right).
-            const real_t xcl = static_cast<real_t>(im + i) * static_cast<real_t>(0.5) * dx;
-            const real_t hcl = (h(im) + h(i)) * static_cast<real_t>(0.5);
-            const real_t xcr = static_cast<real_t>(i + ip) * static_cast<real_t>(0.5) * dx;
-            const real_t hcr = (h(ip) + h(i)) * static_cast<real_t>(0.5);
-            const real_t dvl = detail::noise_dvdy(noise, xcl, hcl);
-            const real_t dvr = detail::noise_dvdy(noise, xcr, hcr);
-
             grad(i) = dx * (line_force +
-                            static_cast<real_t>(0.5) * (dvl + dvr) - f);
+                            static_cast<real_t>(0.5) *
+                                (edvdy(im) + edvdy(i)) - f);
         });
+}
+
+template <class Noise>
+void gradient(const View1D &h, const Params &p, const Noise &noise,
+              const View1D &grad) {
+    GradientWorkspace ws;
+    gradient(h, p, noise, grad, ws);
 }
 
 }  // namespace qew

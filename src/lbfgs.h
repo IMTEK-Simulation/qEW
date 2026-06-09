@@ -103,6 +103,7 @@ LbfgsResult lbfgs_minimize(const View1D &h, const Params &p, const Noise &noise,
 
     View1D g("lbfgs_g", n), g_new("lbfgs_gnew", n), d("lbfgs_d", n);
     View1D q("lbfgs_q", n), s_tmp("lbfgs_s", n), y_tmp("lbfgs_y", n);
+    GradientWorkspace gws;
     std::vector<View1D> S(m), Y(m);
     for (int k = 0; k < m; ++k) {
         S[k] = View1D("lbfgs_S", n);
@@ -144,7 +145,7 @@ LbfgsResult lbfgs_minimize(const View1D &h, const Params &p, const Noise &noise,
         irfft_plan.emplace(exec, qhat, d, KokkosFFT::Direction::backward, -1);
     }
 
-    gradient(h, p, noise, g);
+    gradient(h, p, noise, g, gws);
     LbfgsResult res;
     int ls_fail_streak = 0;
     real_t phi = 0;  // objective at the current iterate, carried across
@@ -244,7 +245,7 @@ LbfgsResult lbfgs_minimize(const View1D &h, const Params &p, const Noise &noise,
 
         // ---- curvature pair s = alpha d, y = g_new - g ----
         // One fused kernel writes the pair and reduces all three scalars.
-        gradient(h, p, noise, g_new);
+        gradient(h, p, noise, g_new, gws);
         real_t sy = 0, ss = 0, yy = 0;
         Kokkos::parallel_reduce(
             "lbfgs_sy", n,
