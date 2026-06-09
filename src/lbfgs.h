@@ -3,6 +3,7 @@
 
 #include <cmath>
 #include <optional>
+#include <utility>
 #include <vector>
 
 #include <Kokkos_Core.hpp>
@@ -242,15 +243,21 @@ LbfgsResult lbfgs_minimize(const View1D &h, const Params &p, const Noise &noise,
             "lbfgs_step", n, KOKKOS_LAMBDA(const int i) { h(i) += al * d(i); });
 
         // ---- curvature pair s = alpha d, y = g_new - g ----
+        // One fused kernel writes the pair and reduces all three scalars.
         gradient(h, p, noise, g_new);
-        Kokkos::parallel_for(
-            "lbfgs_sy", n, KOKKOS_LAMBDA(const int i) {
-                s_tmp(i) = al * d(i);
-                y_tmp(i) = g_new(i) - g(i);
-            });
-        const real_t sy = lbfgs_dot(n, s_tmp, y_tmp);
-        const real_t ss = lbfgs_dot(n, s_tmp, s_tmp);
-        const real_t yy = lbfgs_dot(n, y_tmp, y_tmp);
+        real_t sy = 0, ss = 0, yy = 0;
+        Kokkos::parallel_reduce(
+            "lbfgs_sy", n,
+            KOKKOS_LAMBDA(const int i, real_t &asy, real_t &ass, real_t &ayy) {
+                const real_t s = al * d(i);
+                const real_t y = g_new(i) - g(i);
+                s_tmp(i) = s;
+                y_tmp(i) = y;
+                asy += s * y;
+                ass += s * s;
+                ayy += y * y;
+            },
+            sy, ss, yy);
         if (sy > lp.curvature_eps * std::sqrt(ss * yy)) {  // skip safeguard
             int row;
             if (static_cast<int>(slots.size()) < m) {
@@ -259,15 +266,17 @@ LbfgsResult lbfgs_minimize(const View1D &h, const Params &p, const Noise &noise,
                 row = slots.front();
                 slots.erase(slots.begin());
             }
-            Kokkos::deep_copy(S[row], s_tmp);
-            Kokkos::deep_copy(Y[row], y_tmp);
+            // Swap the pair into the history slot (s_tmp/y_tmp become the
+            // slot's old buffers, reused as scratch next iteration).
+            std::swap(S[row], s_tmp);
+            std::swap(Y[row], y_tmp);
             rho[row] = static_cast<real_t>(1) / sy;
             gamma = sy / yy;
             slots.push_back(row);
         } else {
             ++res.n_curvature_skips;  // non-positive curvature: keep H0 pos. def.
         }
-        Kokkos::deep_copy(g, g_new);
+        std::swap(g, g_new);  // g <- g_new; old g becomes scratch
     }
 
     res.iterations = lp.max_iter;
