@@ -101,7 +101,7 @@ LbfgsResult lbfgs_minimize(const View1D &h, const Params &p, const Noise &noise,
     const int m = lp.m;
 
     View1D g("lbfgs_g", n), g_new("lbfgs_gnew", n), d("lbfgs_d", n);
-    View1D q("lbfgs_q", n), x0("lbfgs_x0", n), s_tmp("lbfgs_s", n), y_tmp("lbfgs_y", n);
+    View1D q("lbfgs_q", n), s_tmp("lbfgs_s", n), y_tmp("lbfgs_y", n);
     std::vector<View1D> S(m), Y(m);
     for (int k = 0; k < m; ++k) {
         S[k] = View1D("lbfgs_S", n);
@@ -198,12 +198,13 @@ LbfgsResult lbfgs_minimize(const View1D &h, const Params &p, const Noise &noise,
         }
 
         // ---- Armijo backtracking line search ----
-        Kokkos::deep_copy(x0, h);
+        // Trials are evaluated at h + alpha*d without writing h; the step is
+        // committed only on acceptance, so failure needs no saved copy/undo.
         if (it == 0) {  // later iterations reuse the accepted trial value
             phi = objective(h, p, noise);
             ++res.n_func_evals;
         }
-        const real_t phi0 = phi;  // objective at x0
+        const real_t phi0 = phi;  // objective at the current iterate
         // alpha0 = 1 for L-BFGS / preconditioned steps (well-scaled direction);
         // for an unpreconditioned first steepest-descent step, scale by 1/|g|.
         real_t alpha = static_cast<real_t>(1);
@@ -213,11 +214,7 @@ LbfgsResult lbfgs_minimize(const View1D &h, const Params &p, const Noise &noise,
         }
         bool ok = false;
         for (int ls = 0; ls < lp.max_ls; ++ls) {
-            const real_t al = alpha;
-            Kokkos::parallel_for(
-                "lbfgs_trial", n,
-                KOKKOS_LAMBDA(const int i) { h(i) = x0(i) + al * d(i); });
-            const real_t phi_trial = objective(h, p, noise);
+            const real_t phi_trial = objective(h, d, alpha, p, noise);
             ++res.n_func_evals;
             if (phi_trial <= phi0 + lp.c1 * alpha * dphi0) {
                 phi = phi_trial;
@@ -227,7 +224,6 @@ LbfgsResult lbfgs_minimize(const View1D &h, const Params &p, const Noise &noise,
             alpha *= lp.ls_shrink;
         }
         if (!ok) {
-            Kokkos::deep_copy(h, x0);  // undo the failed trial
             if (slots.empty() || ++ls_fail_streak > 2) {
                 res.iterations = it;
                 res.max_force = gmax;
@@ -240,9 +236,13 @@ LbfgsResult lbfgs_minimize(const View1D &h, const Params &p, const Noise &noise,
         }
         ls_fail_streak = 0;
 
+        // Commit the accepted step.
+        const real_t al = alpha;
+        Kokkos::parallel_for(
+            "lbfgs_step", n, KOKKOS_LAMBDA(const int i) { h(i) += al * d(i); });
+
         // ---- curvature pair s = alpha d, y = g_new - g ----
         gradient(h, p, noise, g_new);
-        const real_t al = alpha;
         Kokkos::parallel_for(
             "lbfgs_sy", n, KOKKOS_LAMBDA(const int i) {
                 s_tmp(i) = al * d(i);

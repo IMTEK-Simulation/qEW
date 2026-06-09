@@ -26,12 +26,13 @@ struct Params {
     Model model = Model::Linear;
 };
 
-// Total energy E[h] = sum_i dx * (line_energy_i + V_i - f h_i), where the
-// elastic and noise terms are evaluated on the forward edge (i, i+1) exactly as
-// in qew_objective. Runs as a parallel_reduce on the default execution space.
-template <class Noise>
-real_t objective(const View1D &h, const Params &p, const Noise &noise) {
-    const int n = static_cast<int>(h.extent(0));
+namespace detail {
+
+// Shared objective body: the line position enters only through the
+// device-callable functor `at(i)`, so the plain evaluation and the
+// line-search trial evaluation share one analytic definition.
+template <class Noise, class At>
+real_t objective_eval(int n, const Params &p, const Noise &noise, const At &at) {
     const real_t dx = p.physical_size / static_cast<real_t>(n);
     const real_t lt = p.line_tension;
     const real_t f = p.driving_force;
@@ -42,7 +43,9 @@ real_t objective(const View1D &h, const Params &p, const Noise &noise) {
         "qew::objective", n,
         KOKKOS_LAMBDA(const int i, real_t &acc) {
             const int ip = (i + 1) % n;  // periodic forward neighbour
-            const real_t dh_dx = (h(ip) - h(i)) / dx;
+            const real_t hi = at(i);
+            const real_t hip = at(ip);
+            const real_t dh_dx = (hip - hi) / dx;
 
             real_t line_energy;
             if (model == Model::Linear) {
@@ -55,13 +58,47 @@ real_t objective(const View1D &h, const Params &p, const Noise &noise) {
 
             // Edge midpoint, matching python xcenter/hcenter (periodic wrap).
             const real_t xc = static_cast<real_t>(i + ip) * static_cast<real_t>(0.5) * dx;
-            const real_t hc = (h(ip) + h(i)) * static_cast<real_t>(0.5);
+            const real_t hc = (hip + hi) * static_cast<real_t>(0.5);
             const NoiseSample s = noise.sample(xc, hc);
 
-            acc += dx * (line_energy + s.v - f * h(i));
+            acc += dx * (line_energy + s.v - f * hi);
         },
         total);
     return total;
+}
+
+struct LineAt {
+    View1D h;
+    KOKKOS_INLINE_FUNCTION real_t operator()(int i) const { return h(i); }
+};
+
+struct TrialAt {
+    View1D x0, d;
+    real_t alpha;
+    KOKKOS_INLINE_FUNCTION real_t operator()(int i) const {
+        return x0(i) + alpha * d(i);
+    }
+};
+
+}  // namespace detail
+
+// Total energy E[h] = sum_i dx * (line_energy_i + V_i - f h_i), where the
+// elastic and noise terms are evaluated on the forward edge (i, i+1) exactly as
+// in qew_objective. Runs as a parallel_reduce on the default execution space.
+template <class Noise>
+real_t objective(const View1D &h, const Params &p, const Noise &noise) {
+    return detail::objective_eval(static_cast<int>(h.extent(0)), p, noise,
+                                  detail::LineAt{h});
+}
+
+// E at the line-search trial point x0 + alpha*d, evaluated without
+// materialising it -- saves a kernel launch and n stores per trial, and the
+// caller commits (or discards) the step afterwards.
+template <class Noise>
+real_t objective(const View1D &x0, const View1D &d, real_t alpha,
+                 const Params &p, const Noise &noise) {
+    return detail::objective_eval(static_cast<int>(x0.extent(0)), p, noise,
+                                  detail::TrialAt{x0, d, alpha});
 }
 
 // Force grad_i = dE/dh_i. Elastic term: harmonic Laplacian (linear) or
