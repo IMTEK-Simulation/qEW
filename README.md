@@ -51,16 +51,27 @@ OMP_NUM_THREADS=8 OMP_PROC_BIND=spread OMP_PLACES=threads \
 cmake -B build_cuda -DCMAKE_BUILD_TYPE=Release \
     -DKokkos_ENABLE_CUDA=ON -DKokkos_ARCH_HOPPER90=ON
 
-# GPU — AMD MI300A (APU, gfx942, unified memory); needs ROCm/hipcc on PATH
+# GPU — AMD MI300A / MI300X (gfx942); needs ROCm/hipcc on PATH.
+# This code manages memory explicitly, so device-resident (no _APU) is fastest
+# -- see the MI300A note below. Use _APU + HSA_XNACK=1 only for unified-memory code.
 cmake -B build_hip -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_CXX_COMPILER=hipcc \
-    -DKokkos_ENABLE_HIP=ON -DKokkos_ARCH_AMD_GFX942_APU=ON
-# (discrete MI300X: drop the _APU suffix -> -DKokkos_ARCH_AMD_GFX942=ON)
+    -DKokkos_ENABLE_HIP=ON -DKokkos_ARCH_AMD_GFX942=ON
 ```
 
 FFTs run through kokkos-fft on the active backend (FFTW on host, hipFFT/cuFFT on
 GPU) — used both for the one-time noise setup and for the per-iteration L-BFGS
 preconditioner. HDF5 I/O stays on the host.
+
+> **MI300A:** this code manages memory explicitly (mirror / `deep_copy`; no
+> device kernel touches a host allocation), so it wants **device-resident**
+> memory — keep XNACK *off*. Measured ~8× faster than `HSA_XNACK=1` (unified /
+> managed memory is fine-grained coherent → lower bandwidth + migration
+> overhead for these bandwidth-bound kernels). Either leave `HSA_XNACK` unset
+> (the `:xnack+` warning is then benign), or build it as a discrete GPU with
+> `-DKokkos_ARCH_AMD_GFX942=ON` (no `_APU`) to default to device-resident memory
+> and silence the warning. Use `_APU` + `HSA_XNACK=1` only for code that relies
+> on transparent unified access (this code does not).
 
 The same kernels run on whichever backend is selected. **Tests run on the default
 execution space**, so an OpenMP build runs them multi-threaded and a GPU
