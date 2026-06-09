@@ -55,6 +55,8 @@ struct LbfgsResult {
     real_t max_force = 0;
     bool converged = false;
     long n_func_evals = 0;
+    long n_curvature_skips = 0;  // (s,y) pairs rejected by the curvature safeguard
+    long n_ls_restarts = 0;      // line-search failures recovered by history reset
 };
 
 namespace detail {
@@ -227,6 +229,7 @@ LbfgsResult lbfgs_minimize(const View1D &h, const Params &p, const Noise &noise,
                 return res;
             }
             slots.clear();  // reset history, retry as steepest descent
+            ++res.n_ls_restarts;
             continue;
         }
         ls_fail_streak = 0;
@@ -255,6 +258,8 @@ LbfgsResult lbfgs_minimize(const View1D &h, const Params &p, const Noise &noise,
             rho[row] = static_cast<real_t>(1) / sy;
             gamma = sy / yy;
             slots.push_back(row);
+        } else {
+            ++res.n_curvature_skips;  // non-positive curvature: keep H0 pos. def.
         }
         Kokkos::deep_copy(g, g_new);
     }

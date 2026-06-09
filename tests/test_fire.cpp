@@ -159,3 +159,30 @@ TEST(Fire, Deterministic) {
     const auto a = to_host(h1), b = to_host(h2);
     for (int i = 0; i < n; ++i) EXPECT_EQ(a[i], b[i]);
 }
+
+// Capped iterations on a problem that cannot converge in time must report
+// converged=false with iterations==max_iter and a non-zero residual force --
+// the failure path callers branch on. Every other FIRE test asserts the success
+// path, so a regression that always returned converged=true would slip through.
+TEST(Fire, ReportsNonConvergence) {
+    const int n = 64;
+    Params p;
+    p.physical_size = n;  // dx = 1
+    p.line_tension = 1.0;
+    p.driving_force = 0.0;
+    p.model = Model::Linear;
+    HarmonicWell well{2.0, 0.5};
+
+    std::vector<real_t> init(n, 0.0);  // far from the minimum
+    View1D h = make_line(init);
+
+    FireParams fp;
+    fp.dt_max = 0.1 * std::sqrt(1.0 / p.line_tension);
+    fp.ftol = 1e-12;  // unreachable in a couple of steps
+    fp.max_iter = 3;
+    const FireResult r = fire_minimize(h, p, well, fp);
+
+    EXPECT_FALSE(r.converged);
+    EXPECT_EQ(r.iterations, fp.max_iter);
+    EXPECT_GE(r.max_force, fp.ftol);
+}

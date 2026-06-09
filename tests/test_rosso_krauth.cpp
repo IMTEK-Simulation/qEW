@@ -213,3 +213,78 @@ TEST(RossoKrauth, Deterministic) {
     const auto a = to_host(h1), b = to_host(h2);
     for (int i = 0; i < nx; ++i) EXPECT_EQ(a[i], b[i]);
 }
+
+// Above threshold the construction must explicitly report RUNAWAY (not merely
+// "not blocked"): the line advances past rp.runaway with no metastable state.
+// The analytic-fc bisection test only ever reads `.blocked`, so the `runaway`
+// flag and the runaway exit branch are otherwise unexercised -- yet the
+// depinning executable keys its f_c bracketing and its "DEPINNED" report on it.
+TEST(RossoKrauth, RunawayFlagSetAboveThreshold) {
+    const int n = 16;
+    const SinusoidNoise noise;
+    const real_t fc_exact = noise.A * noise.k;
+    const real_t lambda = 2 * 3.14159265358979323846 / noise.k;
+
+    Params p;
+    p.physical_size = n;  // dx = 1 (flat line, elastic irrelevant)
+    p.line_tension = 1.0;
+    p.driving_force = 2.0 * fc_exact;  // well above threshold -> runs away
+    p.model = Model::Linear;
+
+    RkParams rp;
+    rp.dstep = lambda / 200;
+    rp.max_advance = lambda;
+    rp.runaway = 3 * lambda;
+    rp.root_tol = 1e-12;
+    rp.sweep_tol = 1e-11;
+    rp.max_sweeps = 100000;
+
+    View1D h = flat_line(n, 0.0);
+    const RkResult r = rk_block(h, p, noise, rp);
+    EXPECT_TRUE(r.runaway);
+    EXPECT_FALSE(r.blocked);
+    EXPECT_GT(r.mean_h, rp.runaway);  // advanced past the runaway threshold
+}
+
+// Below threshold the arclength model also blocks into an arrested state. The
+// analytic-fc and forward-and-arrested tests pin only the LINEAR model through
+// rk_block (Arclength appears only in the determinism test, which checks
+// reproducibility, not correctness). Here the arclength site velocity must be
+// <= 0 everywhere at the returned configuration.
+TEST(RossoKrauth, BlocksArclengthModel) {
+    const int nx = 64, ny = 64;
+    const real_t Lx = 3.2, Ly = 1.0;
+    FilteredNoise noise(nx, ny, Lx, Ly, /*amplitude=*/0.6, 0.2, 0.2, /*seed=*/29);
+    const DeviceNoise dn = noise.device_noise();
+
+    Params p;
+    p.physical_size = Lx;
+    p.line_tension = 1.2;
+    p.driving_force = 0.1;
+    p.model = Model::Arclength;
+
+    View1D h = flat_line(nx, 0.5 * Ly);
+
+    RkParams rp;
+    rp.dstep = 0.5 * (Ly / ny);
+    rp.max_advance = Ly;
+    rp.runaway = 3 * Ly;
+    rp.root_tol = 1e-11;
+    rp.sweep_tol = 1e-9;
+    rp.max_sweeps = 200000;
+
+    const RkResult r = rk_block(h, p, dn, rp);
+    EXPECT_TRUE(r.blocked);
+
+    View1D grad("grad", nx);
+    gradient(h, p, dn, grad);
+    real_t max_v = 0;
+    Kokkos::parallel_reduce(
+        "max_v", nx,
+        KOKKOS_LAMBDA(const int i, real_t &acc) {
+            const real_t v = -grad(i);
+            if (v > acc) acc = v;
+        },
+        Kokkos::Max<real_t>(max_v));
+    EXPECT_LT(max_v, 1e-6);
+}

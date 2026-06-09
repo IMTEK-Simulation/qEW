@@ -101,6 +101,132 @@ TEST(Lbfgs, ConvergesToHarmonicMinimum) {
     EXPECT_LT(max_dev, 1e-6);
 }
 
+// L-BFGS on the ARCLENGTH model: a flat line in a harmonic trough at y0 is still
+// the unique minimiser (the arclength elastic term vanishes for a flat line), so
+// it converges to h = y0. Every other L-BFGS test uses the linear model; this
+// exercises the arclength branch of objective()/gradient() through the solver.
+TEST(Lbfgs, ConvergesToHarmonicMinimumArclength) {
+    const int n = 96;
+    Params p = linear_params(n);
+    p.model = Model::Arclength;
+    HarmonicWell well{2.0, 0.5};
+    View1D h = make_line(std::vector<real_t>(n, 0.0));
+
+    LbfgsParams lp;
+    lp.ftol = 1e-9;
+    const LbfgsResult r = lbfgs_minimize(h, p, well, lp);
+
+    EXPECT_TRUE(r.converged);
+    const auto hf = to_host(h);
+    real_t max_dev = 0;
+    for (real_t v : hf) max_dev = std::max(max_dev, std::abs(v - well.y0));
+    EXPECT_LT(max_dev, 1e-6);
+}
+
+// Capped iterations report converged=false (the failure path callers branch on).
+// All other L-BFGS tests assert the success path.
+TEST(Lbfgs, ReportsNonConvergence) {
+    const int n = 96;
+    Params p = linear_params(n);
+    HarmonicWell well{2.0, 0.5};
+    View1D h = make_line(std::vector<real_t>(n, 0.0));
+
+    LbfgsParams lp;
+    lp.ftol = 1e-12;  // unreachable in one iteration
+    lp.max_iter = 1;
+    const LbfgsResult r = lbfgs_minimize(h, p, well, lp);
+
+    EXPECT_FALSE(r.converged);
+    EXPECT_GE(r.max_force, lp.ftol);
+}
+
+// Curvature safeguard (the `sy <= eps |s||y|` skip branch). By Cauchy-Schwarz
+// sy <= |s||y| = sqrt(ss*yy), so an enormous curvature_eps makes the acceptance
+// test sy > eps*sqrt(ss*yy) fail for EVERY pair: no (s,y) is ever stored. The
+// solver must then degrade gracefully to (scaled) steepest descent and still
+// reach the minimum -- the safeguard keeps the implicit inverse Hessian positive
+// definite rather than corrupting the solve. A convex problem never skips on its
+// own, so this is the only way to exercise the branch.
+TEST(Lbfgs, CurvatureSkipForcedByLargeEps) {
+    const int n = 16;
+    Params p = linear_params(n);  // small, well-conditioned -> SD converges
+    HarmonicWell well{2.0, 0.5};
+    View1D h = make_line(std::vector<real_t>(n, 0.0));
+
+    LbfgsParams lp;
+    lp.ftol = 1e-8;
+    lp.max_iter = 20000;
+    lp.curvature_eps = 1e30;  // reject every curvature pair
+    const LbfgsResult r = lbfgs_minimize(h, p, well, lp);
+
+    EXPECT_GT(r.n_curvature_skips, 0);
+    EXPECT_TRUE(r.converged);
+    const auto hf = to_host(h);
+    real_t max_dev = 0;
+    for (real_t v : hf) max_dev = std::max(max_dev, std::abs(v - well.y0));
+    EXPECT_LT(max_dev, 1e-6);
+}
+
+// Line-search give-up branch: max_ls = 0 means the backtracking loop runs zero
+// trials, so the very first (steepest-descent) step "fails". With no history to
+// fall back on, the solver reports non-convergence immediately (iteration 0)
+// rather than looping or dereferencing empty history.
+TEST(Lbfgs, LineSearchGivesUpWithNoHistory) {
+    const int n = 32;
+    Params p = linear_params(n);
+    HarmonicWell well{2.0, 0.5};
+    View1D h = make_line(std::vector<real_t>(n, 0.0));
+
+    LbfgsParams lp;
+    lp.ftol = 1e-9;
+    lp.max_ls = 0;
+    const LbfgsResult r = lbfgs_minimize(h, p, well, lp);
+
+    EXPECT_FALSE(r.converged);
+    EXPECT_EQ(r.iterations, 0);
+    EXPECT_EQ(r.n_ls_restarts, 0);  // never got far enough to build history
+}
+
+// Line-search RESTART branch: when a unit L-BFGS step fails the line search but
+// history exists, the solver discards its history and retries as steepest
+// descent instead of giving up or dereferencing empty history.
+//
+// Trigger: a rough, strong-noise landscape on which a unit L-BFGS step
+// overshoots a noise minimum by ~16x -- it needs ~5 Armijo backtracks to
+// recover -- combined with max_ls clamped to 3. Once history is built, that
+// step exhausts its 3 trials and falls into the restart branch. The overshoot
+// is decisive (mls=1,2,3 all fire it; the line search only stops failing at
+// mls>=5), so the branch is reached with margin rather than on an FP knife-edge.
+TEST(Lbfgs, LineSearchRestartsOnStepFailure) {
+    const int nx = 64, ny = 64;
+    const real_t Lx = 3.2, Ly = 1.0;
+    FilteredNoise noise(nx, ny, Lx, Ly, /*amplitude=*/2.0, 0.15, 0.15, /*seed=*/3);
+
+    Params p;
+    p.physical_size = Lx;
+    p.line_tension = 0.5;
+    p.driving_force = 0.0;
+    p.model = Model::Linear;
+
+    View1D h = make_line(std::vector<real_t>(nx, 0.5 * Ly));
+    LbfgsParams lp;
+    lp.ftol = 1e-6;
+    lp.max_iter = 50000;
+    lp.max_ls = 3;  // smaller than the ~5 backtracks the overshoot needs
+    const LbfgsResult r = lbfgs_minimize(h, p, noise.device_noise(), lp);
+    EXPECT_GT(r.n_ls_restarts, 0);  // the restart branch executed
+
+    // Control: with the normal backtracking budget the SAME problem never needs
+    // a restart and converges -- confirming the restart is induced by the clamp
+    // (a genuine safety net) and not a routine code path.
+    View1D h2 = make_line(std::vector<real_t>(nx, 0.5 * Ly));
+    LbfgsParams lp2 = lp;
+    lp2.max_ls = 30;
+    const LbfgsResult r2 = lbfgs_minimize(h2, p, noise.device_noise(), lp2);
+    EXPECT_TRUE(r2.converged);
+    EXPECT_EQ(r2.n_ls_restarts, 0);
+}
+
 // On a quadratic problem L-BFGS converges in few iterations (vs FIRE's many).
 TEST(Lbfgs, FastOnQuadratic) {
     const int n = 128;
