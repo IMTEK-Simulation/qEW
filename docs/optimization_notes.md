@@ -3,10 +3,10 @@
 Technical notes from a code review of the qEW port (June 2026). Items are
 ordered by expected impact.
 
-> **Status:** items 1, 3, 4 (bugs) and 5, 6, 7 (L-BFGS overhead) are fixed on
-> this branch — see `fix_plan.md` for the phase breakdown and measured
-> numbers. Items 2 (convention check), 8–12 (kernel work reduction, RK,
-> dynamics) and the minor items remain open. File references point at the current `main`-line
+> **Status:** items 1, 2, 3, 4 (bugs) and 5, 6, 7 (L-BFGS overhead) are fixed
+> on this branch — see `fix_plan.md` for the phase breakdown and measured
+> numbers. Items 8–12 (kernel work reduction, RK, dynamics) and the minor
+> items remain open. File references point at the current `main`-line
 sources. Nothing here changes physics; everything preserves the documented
 analytic consistency between `objective()` and `gradient()` and the golden-file
 contracts.
@@ -28,15 +28,16 @@ kernel-launch / device-sync overhead in the minimizers.
    3-colour sweep for odd `n`.
 
 2. **Inconsistent pinning-length → line-tension map across run drivers** —
-   `src/qew_runs.h`: `static_sweep()` (line 67) and `depinning_ramp()`
-   (line 201) use `line_tension = pinning_length^1.5 * amplitude`, while
-   `dynamic_anneal()` (line 134) uses `(pinning_length / xi)^1.5 * amplitude`.
-   The depinning `main` comments that its `pinning_length` is already
-   `lambda_p/xi`, so each driver may individually match its Python source, but
-   the same struct-field name means two different physical quantities in
-   different drivers. *Action:* verify each against `qew_*.py` and either
-   unify the convention or rename the fields (`pinning_length_over_xi`). No
-   test currently pins this mapping.
+   `src/qew_runs.h`: `static_sweep()` and `depinning_ramp()` used
+   `line_tension = pinning_length^1.5 * amplitude`, while `dynamic_anneal()`
+   used `(pinning_length / xi)^1.5 * amplitude` — the same struct-field name
+   meant two different physical quantities. **Resolved:** the paper
+   (arXiv:2410.21838, eq. (10)) controls the model through the dimensionless
+   Larkin ratio `lambda_p/xi = (Gamma/U0)^{2/3}`, so all drivers now take a
+   `pinning_length_over_xi` field and share `Gamma = A * (lambda_p/xi)^{3/2}`;
+   each driver's mapping is pinned by a unit test. HDF5 key strings are
+   unchanged and their values carry the ratio (already true for static and
+   depinning output; dynamic output previously recorded the physical length).
 
 3. **Floating-point loop counter in the force ramp** —
    `src/qew_runs.h:214`: `for (real_t f = 0; f <= c.f_max; f += c.f_step)`.

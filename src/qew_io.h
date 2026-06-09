@@ -19,13 +19,16 @@
 
 namespace qew {
 
+// NB: the "pinning_length" keys/values carry the dimensionless ratio
+// lambda_p/xi, the paper's control parameter (see qew_runs.h).
 inline void write_static(HighFive::File &file, const StaticConfig &c,
                          const std::vector<StaticProfile> &profiles) {
     file.createDataSet("physical_size", static_cast<double>(c.Lx));
     for (const StaticProfile &prof : profiles) {
-        const std::string prefix = "driving_force=" + fmt("%.1g", c.driving_force) +
-                                   "/pinning_length=" + fmt("%.3g", prof.pinning_length);
-        file.createDataSet(prefix + "/pinning_length", prof.pinning_length);
+        const std::string prefix =
+            "driving_force=" + fmt("%.1g", c.driving_force) +
+            "/pinning_length=" + fmt("%.3g", prof.pinning_length_over_xi);
+        file.createDataSet(prefix + "/pinning_length", prof.pinning_length_over_xi);
         file.createDataSet(prefix + "/h", prof.h);
     }
 }
@@ -39,7 +42,7 @@ inline void write_dynamic(HighFive::File &file, const DynamicConfig &c,
             "/driving_force=" + fmt("%.1g", c.driving_force) +
             "/line_tension=" + fmt("%.3g", res.line_tension);
         file.createDataSet(prefix + "/pinning_length",
-                           static_cast<double>(c.pinning_length));
+                           static_cast<double>(c.pinning_length_over_xi));
         file.createDataSet(prefix + "/h", snap.h);
     }
 }
@@ -52,7 +55,7 @@ inline void write_depinning(HighFive::File &file, const DepinningConfig &c,
         const std::string prefix = "driving_force=" + fmt("%.4g", st.f);
         file.createDataSet(prefix + "/h", st.h);
         file.createDataSet(prefix + "/pinning_length",
-                           static_cast<double>(c.pinning_length));
+                           static_cast<double>(c.pinning_length_over_xi));
     }
     if (res.f_c_upper_bound >= 0)
         file.createDataSet("f_c_upper_bound",

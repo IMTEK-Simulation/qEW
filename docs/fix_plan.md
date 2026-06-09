@@ -1,11 +1,15 @@
 # Implementation plan for `optimization_notes.md`
 
-> **Status (June 2026):** Phases 0 and 2 are implemented and merged into this
-> branch. Measured effect of Phase 2 on the benchmark's end-to-end
-> preconditioned L-BFGS relaxation (Serial, n = 4096, arclength): 5.73 s /
-> 12893 objective evals → 4.77 s / 10424 at an identical 2470 iterations
-> (−17% wall time). Phases 1, 3, 4, 5 are open; Phase 1 still needs the
-> Python-source check described below.
+> **Status (June 2026):** Phases 0, 1 and 2 are implemented on this branch.
+> Phase 1 was settled by the paper (arXiv:2410.21838 eq. (10):
+> `lambda_p/xi = (Gamma/U0)^{2/3}`, varied by scanning Gamma at fixed
+> disorder): all drivers now take the dimensionless ratio as
+> `pinning_length_over_xi` and share `Gamma = A (lambda_p/xi)^{3/2}`, with
+> per-driver mapping tests; line tensions are numerically unchanged. Measured
+> effect of Phase 2 on the benchmark's end-to-end preconditioned L-BFGS
+> relaxation (Serial, n = 4096, arclength): 5.73 s / 12893 objective evals →
+> 4.77 s / 10424 at an identical 2470 iterations (−17% wall time). Phases 3,
+> 4, 5 are open.
 
 Companion to [`optimization_notes.md`](optimization_notes.md); item numbers
 below refer to that document. Work is grouped into five phases that are

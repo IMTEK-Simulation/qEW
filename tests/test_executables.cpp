@@ -65,19 +65,21 @@ TEST(Executables, StaticSweepShapeAndMapping) {
     cfg.Ly = 1.0;
     cfg.nx = 16;
     cfg.ny = 8;
-    cfg.pinning_lengths = {0.1, 1.0, 4.0};
+    cfg.pinning_lengths_over_xi = {0.1, 1.0, 4.0};
     cfg.ftol = 1e-8;
     cfg.max_iter = 2000;
 
     const auto profiles = static_sweep(cfg, ZeroNoise{});
 
-    ASSERT_EQ(profiles.size(), cfg.pinning_lengths.size());
+    ASSERT_EQ(profiles.size(), cfg.pinning_lengths_over_xi.size());
     for (std::size_t i = 0; i < profiles.size(); ++i) {
         const auto &prof = profiles[i];
-        EXPECT_EQ(prof.pinning_length, cfg.pinning_lengths[i]);
-        // line_tension = pinning_length^1.5 * amplitude (the documented map).
+        EXPECT_EQ(prof.pinning_length_over_xi, cfg.pinning_lengths_over_xi[i]);
+        // Larkin inversion Gamma = amplitude * (lambda_p/xi)^{3/2}
+        // (arXiv:2410.21838 eq. (10)); shared by all three drivers.
         EXPECT_NEAR(prof.line_tension,
-                    std::pow(cfg.pinning_lengths[i], 1.5) * cfg.amplitude, 1e-12);
+                    std::pow(cfg.pinning_lengths_over_xi[i], 1.5) * cfg.amplitude,
+                    1e-12);
         ASSERT_EQ(prof.h.size(), static_cast<std::size_t>(cfg.nx));
         // Zero noise, zero force: the flat start is already the minimum.
         EXPECT_TRUE(prof.result.converged);
@@ -94,7 +96,7 @@ TEST(Executables, DynamicAnnealTimestepAndSnapshots) {
     cfg.model = Model::Linear;
     cfg.amplitude = 1.0;
     cfg.xi = 0.1;
-    cfg.pinning_length = 0.01;
+    cfg.pinning_length_over_xi = 0.1;
     cfg.Lx = 1.0;
     cfg.Ly = 1.0;
     cfg.nx = 32;
@@ -111,8 +113,9 @@ TEST(Executables, DynamicAnnealTimestepAndSnapshots) {
     const real_t dt_expected =
         std::min(static_cast<real_t>(0.1), cfg.tau / 10 * std::min(fac, fac * fac));
     EXPECT_NEAR(res.dt, dt_expected, 1e-12);
+    // Same Larkin map as the static driver: Gamma = A * (lambda_p/xi)^{3/2}.
     EXPECT_NEAR(res.line_tension,
-                std::pow(cfg.pinning_length / cfg.xi, 1.5) * cfg.amplitude, 1e-12);
+                std::pow(cfg.pinning_length_over_xi, 1.5) * cfg.amplitude, 1e-12);
 
     // Snapshots are logarithmically spaced: first near 10*dt, each ~10x the last.
     ASSERT_GE(res.snapshots.size(), 2u);
@@ -137,7 +140,7 @@ TEST(Executables, DepinningRampBracketsCriticalForce) {
     DepinningConfig cfg;
     cfg.model = Model::Linear;
     cfg.amplitude = 1.0;
-    cfg.pinning_length = 1.0;
+    cfg.pinning_length_over_xi = 1.0;
     cfg.Lx = 8.0;
     cfg.Ly = 1.0;
     cfg.nx = 8;
@@ -152,6 +155,10 @@ TEST(Executables, DepinningRampBracketsCriticalForce) {
     cfg.rp.max_sweeps = 20000;
 
     const DepinningResult res = depinning_ramp(cfg, noise);
+
+    // Same Larkin map as the other drivers: Gamma = A * (lambda_p/xi)^{3/2}.
+    EXPECT_NEAR(res.line_tension,
+                std::pow(cfg.pinning_length_over_xi, 1.5) * cfg.amplitude, 1e-12);
 
     ASSERT_FALSE(res.steps.empty());
     EXPECT_TRUE(res.steps.front().result.blocked);  // f = 0 blocks
@@ -195,7 +202,7 @@ TEST(Executables, WriteStaticKeysAndValues) {
     cfg.driving_force = 0.0;
 
     std::vector<StaticProfile> profiles(1);
-    profiles[0].pinning_length = 0.1;
+    profiles[0].pinning_length_over_xi = 0.1;
     profiles[0].line_tension = 0.5;
     profiles[0].h = {1.0, 2.0, 3.0, 4.0};
 
@@ -225,7 +232,7 @@ TEST(Executables, WriteDynamicKeysAndValues) {
     DynamicConfig cfg;
     cfg.Lx = 2.0;
     cfg.driving_force = 0.0;
-    cfg.pinning_length = 0.01;
+    cfg.pinning_length_over_xi = 0.1;
 
     DynamicResult res;
     res.line_tension = 2.0;
@@ -249,7 +256,7 @@ TEST(Executables, WriteDynamicKeysAndValues) {
 TEST(Executables, WriteDepinningSkipsRunawayAndWritesFc) {
     DepinningConfig cfg;
     cfg.Lx = 8.0;
-    cfg.pinning_length = 5.0;
+    cfg.pinning_length_over_xi = 5.0;
 
     DepinningResult res;
     res.f_c_upper_bound = 0.8;

@@ -80,7 +80,7 @@ int main(int argc, char *argv[]) {
         FilteredNoise snoise(snx, sny, sLx, sLy, 1.0, sxi, sxi, /*seed=*/1);
         Params sp;
         sp.physical_size = sLx;
-        sp.line_tension = 1.0;  // pinning_length = 1
+        sp.line_tension = 1.0;  // lambda_p/xi = 1
         sp.driving_force = 0.0;
         sp.model = Model::Arclength;
         View1D hs("hs", snx);
