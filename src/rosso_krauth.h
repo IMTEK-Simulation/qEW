@@ -148,6 +148,7 @@ RkResult rk_block(const View1D &h, const Params &p, const Noise &noise,
     mean_h0 /= static_cast<real_t>(n);
 
     RkResult res;
+    real_t cum_adv = 0;  // forward-only moves: mean_h = mean_h0 + cum_adv / n
     for (int sweep = 0; sweep < rp.max_sweeps; ++sweep) {
         for (int color = 0; color < 2; ++color) {
             Kokkos::parallel_for(
@@ -168,17 +169,14 @@ RkResult rk_block(const View1D &h, const Params &p, const Noise &noise,
         Kokkos::parallel_reduce(
             "rk_adv_sum", n,
             KOKKOS_LAMBDA(const int i, real_t &acc) { acc += adv(i); }, total_adv);
-        real_t mean_h = 0;
-        Kokkos::parallel_reduce(
-            "rk_mean", n,
-            KOKKOS_LAMBDA(const int i, real_t &acc) { acc += h(i); }, mean_h);
-        mean_h /= static_cast<real_t>(n);
+        cum_adv += total_adv;
+        const real_t mean_adv = cum_adv / static_cast<real_t>(n);
 
         res.sweeps = sweep + 1;
         res.total_advance = total_adv;
-        res.mean_h = mean_h;
+        res.mean_h = mean_h0 + mean_adv;
 
-        if (mean_h - mean_h0 > rp.runaway) {  // depinned: advanced too far
+        if (mean_adv > rp.runaway) {  // depinned: advanced too far
             res.runaway = true;
             res.blocked = false;
             return res;
