@@ -3,10 +3,10 @@
 Technical notes from a code review of the qEW port (June 2026). Items are
 ordered by expected impact.
 
-> **Status:** items 1, 2, 3, 4 (bugs) and 5, 6, 7 (L-BFGS overhead) are fixed
-> on this branch — see `fix_plan.md` for the phase breakdown and measured
-> numbers. Items 8–12 (kernel work reduction, RK, dynamics) and the minor
-> items remain open. File references point at the current `main`-line
+> **Status:** items 1–12 are addressed on this branch — see `fix_plan.md`
+> for the phase breakdown and measured numbers. Item 12's GPU benefit
+> (RNG lock relief) still needs verification on the CUDA runner; the minor
+> items 13–15 are won't-fix unless profiling says otherwise. File references point at the current `main`-line
 sources. Nothing here changes physics; everything preserves the documented
 analytic consistency between `objective()` and `gradient()` and the golden-file
 contracts.
