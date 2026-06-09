@@ -10,6 +10,7 @@
 
 #include "dynamics.h"
 #include "filtered_noise.h"
+#include "lbfgs.h"
 #include "qew_model.h"
 #include "qew_types.h"
 
@@ -69,6 +70,35 @@ int main(int argc, char *argv[]) {
             "dyn=%7.3f ms/ea\n",
             nthreads, t_setup, 1e3 * t_grad / reps, 1e3 * t_obj / reps,
             1e3 * t_dyn / reps);
+
+        // End-to-end L-BFGS relaxation shaped like a qew_static run
+        // (preconditioned, flat start). Tracks the minimiser-loop overheads
+        // (line-search objective evals, two-loop recursion, history updates)
+        // that the per-kernel timings above cannot see.
+        const int snx = 4096, sny = 512;
+        const real_t sLx = 32.0, sLy = 1.0, sxi = 0.1;
+        FilteredNoise snoise(snx, sny, sLx, sLy, 1.0, sxi, sxi, /*seed=*/1);
+        Params sp;
+        sp.physical_size = sLx;
+        sp.line_tension = 1.0;  // pinning_length = 1
+        sp.driving_force = 0.0;
+        sp.model = Model::Arclength;
+        View1D hs("hs", snx);
+        Kokkos::deep_copy(hs, static_cast<real_t>(0.5) * sLy);
+        LbfgsParams sopt;
+        sopt.ftol = 1e-6;
+        sopt.max_iter = 5000;
+        sopt.precondition = true;
+        sopt.precond_shift =
+            static_cast<real_t>(0.5) * (sLx / snx) / (sxi * sxi);
+        timer.reset();
+        const LbfgsResult sres =
+            lbfgs_minimize(hs, sp, snoise.device_noise(), sopt);
+        const double t_lbfgs = timer.seconds();
+        std::printf(
+            "lbfgs(n=%d, precond): %6.3fs  iters=%d  feval=%ld  %s\n", snx,
+            t_lbfgs, sres.iterations, sres.n_func_evals,
+            sres.converged ? "converged" : "NOT converged");
     }
     Kokkos::finalize();
     return 0;
