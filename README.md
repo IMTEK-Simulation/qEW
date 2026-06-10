@@ -111,8 +111,8 @@ cmake -B build_cuda -DCMAKE_BUILD_TYPE=Release \
 
 ## Running the simulations
 
-Each executable is configured by module-level constants at the top of its
-`main.cpp` (no command-line arguments), matching the Python convention.
+Run with no arguments to reproduce the paper defaults (the former
+module-constant values, unchanged):
 
 ```sh
 ./build/executables/qew_static/qew_static        # -> static_arclength.h5
@@ -125,6 +125,27 @@ Each executable is configured by module-level constants at the top of its
 | `qew_static` | L-BFGS minimization, sweep pinning length | `qew_static.py` |
 | `qew_dynamic` | annealed Langevin (Euler–Maruyama) | `qew_dynamic.py` |
 | `qew_depinning` | Rosso–Krauth force ramp toward `f_c` | `qew_depinning.py` |
+
+Every config field is also a command-line option, so parameter sweeps need **no
+rebuild** (the parser is `executables/cli.h`; pass `--help` for each tool's full
+list). Options are `--key value` or `--key=value`; `--output` redirects the HDF5
+file so sweep points don't overwrite each other:
+
+```sh
+# one stiffness, custom resolution, into its own file
+qew_static --pinning_lengths 10 --nx 8192 --xi 0.05 --seed 7 \
+           --output static_lp10_seed7.h5
+
+qew_dynamic --pinning_length 1.0 --total_time 1e6 --seed 3 \
+            --output dynamic_lp1_seed3.h5
+
+qew_depinning --pinning_length 8 --f_max 60 --output depinning_lp8.h5
+```
+
+Unrecognised options and malformed numbers are rejected with the usage text;
+Kokkos's own `--kokkos-*` flags are consumed by `Kokkos::initialize` before the
+parser sees them. The `orchestration/` SLURM scripts drive sweeps through these
+options (see `orchestration/README.md`).
 
 ## Analysis stays in Python
 

@@ -21,6 +21,7 @@ set(TEST_SOURCES
     test_lbfgs.cpp
     test_rosso_krauth.cpp
     test_executables.cpp
+    test_cli.cpp
 )
 
 # Kokkos-aware GoogleTest entry point (initializes/finalizes Kokkos around the
@@ -31,6 +32,8 @@ list(APPEND TEST_SOURCES gtest_kokkos_main.cpp)
 add_executable(tests ${TEST_SOURCES})
 target_link_libraries(tests PRIVATE lib GTest::gtest)
 target_include_directories(tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+# test_cli.cpp includes the executables' CLI parser (header-only, no deps).
+target_include_directories(tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../executables)
 
 # Golden-file cross-check against SciPy (test_filtered_noise.cpp) needs HDF5.
 if(QEW_WITH_HDF5)
